@@ -1,11 +1,12 @@
+const util = require('../../../proxy/common/util')
+
 module.exports = {
   name: 'unVerifySsl',
   priority: 124,
   requestIntercept (context, interceptOpt, req, res, ssl, next) {
     const { rOptions, log } = context
 
-    if (rOptions.agent && rOptions.agent.options.rejectUnauthorized && rOptions.agent.unVerifySslAgent) {
-      rOptions.agent = rOptions.agent.unVerifySslAgent
+    if (util.unVerifySsl(rOptions)) {
       log.info(`unVerifySsl intercept: ${rOptions.hostname}, unVerifySsl`)
       res.setHeader('DS-Interceptor', 'unVerifySsl')
     } else {

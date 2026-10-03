@@ -79,6 +79,51 @@ function createAgent (protocol, timeoutConfig, verifySsl) {
     : createHttpAgent(timeoutConfig)
 }
 
+/**
+ * 判断本次请求是否已经处于「不校验上游证书」的状态。
+ */
+util.isUnVerifySsl = (rOptions) => {
+  const agent = rOptions.agent
+  if (agent && agent.options && agent.options.rejectUnauthorized === false) {
+    return true
+  }
+  return rOptions.rejectUnauthorized === false
+}
+
+/**
+ * 确保本次请求不再校验上游服务器的证书。
+ *
+ * 优先切换到 agent 上的 unVerifySslAgent（agent 是共享单例，不能直接改它的 options）；
+ * 当 agent 不存在或没有 unVerifySslAgent 时（例如外部代理的 tunnel-agent，或历史上
+ * `Connection: close` 造成的 agent === false），退化为在本次请求的 options 上设置
+ * rejectUnauthorized = false —— node 在没有自定义 agent 时会用该选项创建连接，
+ * 因此同样能关掉证书校验。
+ *
+ * SNI 改写（sni.js）、unVerifySsl 拦截、域名代理（proxy.js）、自动兼容程序
+ * （createRequestHandler.js）都通过它降级校验：少了这一步，就会拿原域名的证书去校验
+ * 被改写后的 servername，报 ERR_TLS_CERT_ALTNAME_INVALID，代理直接返回 500。
+ *
+ * @returns {boolean} true 表示本次调用关闭了证书校验；false 表示本来就没校验（无需改动）。
+ */
+util.unVerifySsl = (rOptions) => {
+  if (util.isUnVerifySsl(rOptions)) {
+    return false
+  }
+  if (rOptions.protocol !== 'https:') {
+    // http 请求没有证书校验一说
+    return false
+  }
+
+  const agent = rOptions.agent
+  if (agent && agent.options && agent.unVerifySslAgent) {
+    rOptions.agent = agent.unVerifySslAgent
+    return true
+  }
+
+  rOptions.rejectUnauthorized = false
+  return true
+}
+
 util.parseHostnameAndPort = (host, defaultPort) => {
   let arr = host.match(IPv6_HOST_RE) // 尝试解析IPv6
   if (arr) {
@@ -141,14 +186,23 @@ util.getOptionsFromRequest = (req, ssl, externalProxy = null, serverSetting, com
   delete headers['proxy-connection']
   let agent
   if (!externalProxyUrl) {
-    // keepAlive
+    // 无论客户端是否声明 `Connection: close`，都必须挂上 agent，不能置为 false：
+    // agent 上除了超时配置，还挂着 unVerifySslAgent（见 createHttpsAgent），
+    // SNI 改写（sni.js）、关闭证书校验（unVerifySsl.js）、域名代理（proxy.js）、
+    // 自动兼容程序（createRequestHandler.js）都要靠它把校验降级为不校验。
+    // 历史缺陷：这里曾在 `headers.connection === 'close'` 时设置 agent = false，
+    // 于是 servername 被改写成 sni（例如 github.com → baidu.com）后，无法换成不校验证书的
+    // agent，上游仍拿原域名的证书去校验 → ERR_TLS_CERT_ALTNAME_INVALID → 代理返回 500。
+    // node 的 request 库默认就会发送 `Connection: close`，所以受影响的客户端不止一个。
+    // 注意：`Connection: close` 的「不复用连接」语义保留在 headers 上即可 ——
+    // 实测 node 的 Agent 收到请求头 connection: close 后不会把 socket 放回连接池（freeSockets 为空），
+    // 等价于每次新建连接。
+    const timeoutConfig = getTimeoutConfig(hostname, serverSetting)
+    // log.info(`get timeoutConfig '${hostname}':`, timeoutConfig)
+    agent = createAgent(protocol, timeoutConfig, serverSetting.verifySsl)
     if (headers.connection !== 'close') {
-      const timeoutConfig = getTimeoutConfig(hostname, serverSetting)
-      // log.info(`get timeoutConfig '${hostname}':`, timeoutConfig)
-      agent = createAgent(protocol, timeoutConfig, serverSetting.verifySsl)
+      // keepAlive
       headers.connection = 'keep-alive'
-    } else {
-      agent = false
     }
   } else {
     agent = util.getTunnelAgent(protocol === 'https:', externalProxyUrl)

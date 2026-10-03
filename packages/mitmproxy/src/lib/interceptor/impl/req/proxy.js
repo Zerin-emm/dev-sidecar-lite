@@ -1,4 +1,5 @@
 const URL = require('node:url')
+const util = require('../../../proxy/common/util')
 
 const PLACEHOLDER_RE = /\$\{[^}]+\}/g
 
@@ -132,21 +133,16 @@ module.exports = {
     }
 
     if (interceptOpt.sni) {
-      let unVerifySsl = rOptions.agent && rOptions.agent.options.rejectUnauthorized === false
-
       rOptions.servername = interceptOpt.sni
-      if (rOptions.agent && rOptions.agent.options.rejectUnauthorized && rOptions.agent.unVerifySslAgent) {
-        // rOptions.agent.options.rejectUnauthorized = false // 不能直接在agent上进行修改属性值，因为它采用了单例模式，所有请求共用这个对象的
-        rOptions.agent = rOptions.agent.unVerifySslAgent
-        unVerifySsl = true
-      }
+      // servername 被改写后必须关闭证书校验，否则会拿原域名的证书去校验新的 servername
+      util.unVerifySsl(rOptions)
+      const unVerifySsl = util.isUnVerifySsl(rOptions)
 
       const unVerifySslStr = unVerifySsl ? ', unVerifySsl' : ''
       res.setHeader('DS-Interceptor', `proxy: ${proxyTarget}, sni: ${interceptOpt.sni}${unVerifySslStr}`)
       log.info(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, sni replace servername: ${rOptions.servername}${unVerifySslStr}`)
     } else if (interceptOpt.unVerifySsl === true) {
-      if (rOptions.agent && rOptions.agent.options.rejectUnauthorized && rOptions.agent.unVerifySslAgent) {
-        rOptions.agent = rOptions.agent.unVerifySslAgent
+      if (util.unVerifySsl(rOptions)) {
         res.setHeader('DS-Interceptor', `proxy: ${proxyTarget}, unVerifySsl`)
         log.info(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, unVerifySsl`)
       } else {

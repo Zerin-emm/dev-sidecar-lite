@@ -29,16 +29,16 @@ const releasesAtomUrl = 'https://github.com/Zerin-emm/dev-sidecar-lite/releases.
  *
  * 两个坑（都实测过，别改）：
  *
- * 1、必须走本地代理，而且必须显式带 `Connection: keep-alive`。
- *    本机直连 github.com 是 ETIMEDOUT（这正是本应用存在的意义），所以更新请求要发给
- *    本地代理。而 DS 在 `packages/mitmproxy/src/lib/proxy/common/util.js:145-152` 里，
- *    一旦看到客户端发 `Connection: close` 就把 agent 置为 false；随后 sni 拦截器
- *    （`packages/mitmproxy/src/lib/interceptor/impl/req/sni.js:10`）虽然把 servername 改成了
- *    baidu.com，却因为没有 agent.unVerifySslAgent 可用，无法关掉上游证书校验，
- *    于是上游拿着 github.com 的证书去和 baidu.com 比对，报
- *    `ERR_TLS_CERT_ALTNAME_INVALID`，代理直接回 500 错误页。
- *    （node 的 request 库默认发 Connection: close，curl 默认 keep-alive，
- *     所以同一时刻 curl 能通、本应用却拿到 500。）显式 keep-alive 后实测 200。
+ * 1、必须走本地代理，并显式带 `Connection: keep-alive`。
+ *    本机直连 github.com 是 ETIMEDOUT（这正是本应用存在的意义），所以更新请求要发给本地代理。
+ *    历史背景：`Connection: close` 这条路径以前是坏的 —— DS 在
+ *    `packages/mitmproxy/src/lib/proxy/common/util.js` 里一看到 `Connection: close` 就把 agent 置为 false，
+ *    于是 sni 拦截器（`packages/mitmproxy/src/lib/interceptor/impl/req/sni.js`）把 servername 改成 baidu.com 后
+ *    无法关闭上游证书校验，上游拿 github.com 的证书去和 baidu.com 比对，报
+ *    `ERR_TLS_CERT_ALTNAME_INVALID`，代理直接回 500 错误页（node 的 request 库默认发 Connection: close，
+ *    curl 默认 keep-alive，所以同一时刻 curl 能通、本应用却拿到 500）。
+ *    该内核缺陷已修：util.js 不再把 agent 置为 false，并新增 util.unVerifySsl() 兜底；
+ *    这里显式 keep-alive 只是顺带复用连接，不再是绕开缺陷的必要条件。
  *
  * 2、客户端必须信任 DS 的根证书（ca 选项），否则报
  *    `unable to verify the first certificate` —— node 不读 Windows 证书库。

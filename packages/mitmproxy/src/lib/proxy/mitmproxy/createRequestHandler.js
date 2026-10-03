@@ -197,12 +197,9 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           // 自动兼容程序：2
           if (rOptions.agent) {
             const compatibleConfig = compatible.getRequestCompatibleConfig(rOptions, rOptions.compatibleConfig)
-            if (compatibleConfig && compatibleConfig.rejectUnauthorized != null && rOptions.agent.options.rejectUnauthorized !== compatibleConfig.rejectUnauthorized) {
-              if (compatibleConfig.rejectUnauthorized === false && rOptions.agent.unVerifySslAgent) {
-                log.info(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rOptions.agent.options.rejectUnauthorized = ${compatibleConfig.rejectUnauthorized}'`)
-                rOptions.agent = rOptions.agent.unVerifySslAgent
-                res.setHeader('DS-Compatible', 'unVerifySsl')
-              }
+            if (compatibleConfig && compatibleConfig.rejectUnauthorized === false && commonUtil.unVerifySsl(rOptions)) {
+              log.info(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rejectUnauthorized = false'（不校验上游证书）`)
+              res.setHeader('DS-Compatible', 'unVerifySsl')
             }
           }
 
