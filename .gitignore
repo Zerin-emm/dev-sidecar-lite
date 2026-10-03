@@ -12,6 +12,8 @@
 node_modules/
 *.lock
 package-lock.json
+dist_electron/
+.pnpm-store/
 
 # Other files
 out

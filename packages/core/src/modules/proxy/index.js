@@ -19,7 +19,8 @@ const ProxyPlugin = function (context) {
       const port = config.get().server.port
       const proxyConfig = config.get().proxy || {}
       const setEnv = proxyConfig.setEnv ?? false
-      await shell.setSystemProxy({ ip, port, setEnv })
+      const setCaBundle = proxyConfig.setCaBundle ?? false
+      await shell.setSystemProxy({ ip, port, setEnv, setCaBundle })
       log.info(`开启系统代理成功：${ip}:${port}`)
       event.fire('status', { key: 'proxy.enabled', value: true })
       return { ip, port }
@@ -58,11 +59,12 @@ module.exports = {
     other: [],
     proxyHttp: false, // false=只代理HTTPS请求   true=同时代理HTTP和HTTPS请求
     setEnv: false,
+    setCaBundle: false,
 
     // 排除国内域名 所需配置
-    excludeDomesticDomainAllowList: true, // 是否排除国内域名，默认：需要排除
+    excludeDomesticDomainAllowList: false, // 是否排除国内域名，默认：不排除（国内域名由下方的 excludeIpList 逐条排除）
     autoUpdateDomesticDomainAllowList: true, // 是否自动更新国内域名
-    remoteDomesticDomainAllowListFileUrl: 'https://raw.githubusercontent.com/pluwen/china-domain-allowlist/refs/heads/main/allow-list.sorl',
+    remoteDomesticDomainAllowListFileUrl: 'https://ghproxy.net/https://raw.githubusercontent.com/pluwen/china-domain-allowlist/main/allow-list.sorl',
     domesticDomainAllowListFileAbsolutePath: null, // 自定义 domestic-domain-allowlist.txt 文件位置，可以是本地文件路径
     domesticDomainAllowListFilePath: './extra/proxy/domestic-domain-allowlist.txt', // 内置国内域名文件
 
@@ -72,7 +74,6 @@ module.exports = {
 
       // 中国大陆
       '*.cn': true,
-      'cn.*': true,
       '*china*': true,
 
       // Github加速源：以下加速源代理后反而出现问题，从系统代理中排除掉
@@ -154,7 +155,6 @@ module.exports = {
       '*.windows.com': true,
       '*.office.com': true,
       '*.office.net': true,
-      '*.live.com': true,
       '*.msn.com': true,
 
       // WPS
@@ -203,9 +203,6 @@ module.exports = {
       // Github文件上传所使用的域名，被DS代理会导致文件上传经常失败，从系统代理中排除掉
       'objects-origin.githubusercontent.com': true,
 
-      // cloudflare：排除以下域名，cloudflare的人机校验会更快，成功率更高。
-      'challenges.cloudflare.com': true,
-
       // endregion
 
       // 本地地址，无需代理
@@ -235,6 +232,56 @@ module.exports = {
 
       // 局域网地址，无需代理
       '192.168.*.*': true,
+
+      // region 以下排除项来自官方 remote_config.json 的 proxy.excludeIpList
+      '*.ghproxy.net': true,
+      '*.ghp.ci': true,
+      '*.dgithub.xyz': true,
+      'pages.github.com': true,
+      'help.github.com': true,
+      'docs.github.com': true,
+      '*.github.blog': true,
+      'analytics.githubassets.com': true,
+      'ghcc.githubassets.com': true,
+      'www.docker.com': true,
+      'login.docker.com': true,
+      'api.dso.docker.com': true,
+      'desktop.docker.com': true,
+      'docs.docker.com': true,
+      '*.s-microsoft.com': true,
+      '*.xboxlive.com': true,
+      '*.mihoyo.com': true,
+      '*.bilicomic.com': true,
+      '*.cmicapm.com': true,
+      '*.cloudflare-cn.com': true,
+      '*.microsoftonline.com': true,
+      '*.msedge.net': true,
+      '*kaspersky*.com': true,
+      '*.upd.kaspersky.com': true,
+      '*.lanhuapp.com': true,
+      '*.soboten.com': true,
+      '*.sandboxie-plus.com': true,
+      '*.wuyou.net': true,
+      '*.pyecharts.org': true,
+      '*.bcloudlink.com': true,
+      '*.qijishow.com': true,
+      '*.z-lib.fo': true,
+      '*.finalshell.com': true,
+      '*.minebbs.com': true,
+      '*.spigotmc.org': true,
+      '*.virustotal.com': true,
+      '*.gitlab.com': true,
+      '*.deepseek.com': true,
+      '*steaminventoryhelper.com': true,
+      '*.youdemai.com': true,
+      '*.casualthink.com': true,
+      '*.elastic.co': false,
+      '[2049:8c54:813:10c::140]': true,
+      '[2409:8a0c:a442:ff40:a51f:4b9c:8b41:25ea]': true,
+      '[2606:2800:147:120f:30c:1ba0:fc6:265a]': true,
+      '44.239.165.12': true,
+      '3.164.110.117': true,
+      // endregion
     },
   },
   status: {

@@ -25,15 +25,6 @@ async function generateForgeRsaKeyPair () {
   return { privateKey: forgePrivateKey, publicKey: forgePublicKey }
 }
 
-// const os = require('os')
-// let username = 'dev-sidecar'
-// try {
-//   const user = os.userInfo()
-//   username = user.username
-// } catch (e) {
-//   log.info('get userinfo error', e)
-// }
-
 utils.createCA = function (CN) {
   const keys = pki.rsa.generateKeyPair(2048)
   const cert = pki.createCertificate()
@@ -136,19 +127,6 @@ utils.createFakeCertificateByDomain = async function (caKey, caCert, domain, map
     critical: true,
     cA: false,
   },
-  // {
-  //   name: 'keyUsage',
-  //   critical: true,
-  //   digitalSignature: true,
-  //   contentCommitment: true,
-  //   keyEncipherment: true,
-  //   dataEncipherment: true,
-  //   keyAgreement: true,
-  //   keyCertSign: true,
-  //   cRLSign: true,
-  //   encipherOnly: true,
-  //   decipherOnly: true
-  // },
   {
     name: 'subjectAltName',
     altNames,

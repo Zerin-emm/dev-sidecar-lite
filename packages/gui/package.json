@@ -1,6 +1,6 @@
 {
   "name": "@docmirror/dev-sidecar-gui",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": false,
   "type": "module",
   "main": "src/background.js",
@@ -8,6 +8,7 @@
     "email": "xiaojunnuo@qq.com",
     "name": "Greper"
   },
+  "description": "开发者边车辅助工具 — 加速 GitHub/NPM/Docker Hub 等站点的本地 MITM 代理",
   "license": "MPL-2.0",
   "homepage": "https://github.com/docmirror/dev-sidecar",
   "scripts": {
@@ -16,7 +17,7 @@
     "lint": "pnpm exec vue-cli-service lint",
     "electron": "node ../../_script/electron-dev.mjs",
     "electron:build": "pnpm run build && pnpm exec electron-builder --config electron-builder.config.cjs",
-    "postinstall": "pnpm exec electron-builder install-app-deps",
+    "postinstall": "node -e \"!process.env.CI && require('child_process').execSync('electron-builder install-app-deps', { stdio:'inherit' })\"",
     "postuninstall": "pnpm exec electron-builder install-app-deps",
     "electron:icons": "pnpm exec electron-icon-builder --input=./public/logo/win.png --output=build --flatten",
     "electron:icons-mac": "pnpm exec electron-icon-builder --input=./public/logo/mac.png --output=build --flatten",
@@ -28,38 +29,27 @@
     "@starknt/shutdown-handler-napi": "^0.0.3",
     "@starknt/sysproxy": "^0.0.3",
     "@vscode/sudo-prompt": "^9.3.2",
-    "adm-zip": "^0.5.17",
     "ant-design-vue": "^4.2.6",
     "archiver": "^7.0.1",
-    "core-js": "^3.49.0",
-    "electron-baidu-tongji": "^1.0.5",
-    "electron-updater": "^6.8.3",
     "json5": "^2.2.3",
+    "jsoneditor": "^10.4.3",
     "lodash": "^4.18.1",
     "minimist": "^1.2.8",
-    "request-progress": "^3.0.0",
     "sass": "^1.99.0",
     "sass-loader": "^16.0.7",
-    "tiny-emitter": "^2.1.0",
     "vue": "^3.5.33",
-    "vue-router": "^4.6.4",
-    "vue3-json-editor": "^1.1.5"
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
-    "@babel/plugin-syntax-jsx": "^7.28.6",
-    "@vue/babel-helper-vue-jsx-merge-props": "^1.4.0",
     "@vue/babel-preset-jsx": "^1.4.0",
     "@vue/cli-plugin-babel": "^5.0.9",
     "@vue/cli-service": "^5.0.9",
-    "concurrently": "^8.2.2",
-    "cross-env": "^7.0.3",
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1",
     "electron-icon-builder": "^2.0.1",
     "json5-loader": "^4.0.1",
-    "path-browserify": "^1.0.1",
-    "wait-on": "^7.2.0"
+    "path-browserify": "^1.0.1"
   },
   "browserslist": [
     "> 1%",

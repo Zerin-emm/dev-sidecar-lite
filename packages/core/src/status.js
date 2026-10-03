@@ -5,7 +5,6 @@ const log = require('./utils/util.log.core')
 const status = {
   server: { enabled: false },
   proxy: {},
-  plugin: {},
 }
 
 event.register('status', (event) => {

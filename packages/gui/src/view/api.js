@@ -1,6 +1,5 @@
 import { ipcRenderer, shell } from 'electron'
 import lodash from 'lodash'
-import path from 'path'
 
 let inited = false
 let apiObj = null
@@ -39,7 +38,9 @@ export function apiInit (app) {
         await shell.openExternal(href)
       },
       openPath (file) {
-        shell.openPath(path.resolve(file))
+        // 注意：渲染进程里的 path 是 path-browserify，会把 Windows 绝对路径解析成错误路径（C:\... 变成 /C:\...）；
+        // 并且 shell 本身是主进程模块。这里统一转发给主进程的 shell.openPath 处理，路径由主进程的 node:path 解析。
+        return invoke('shell.openPath', file)
       },
     },
   }

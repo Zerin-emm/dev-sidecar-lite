@@ -1,8 +1,9 @@
 <script>
 import { ipcRenderer } from 'electron'
+import { h } from 'vue'
 import { ProfileOutlined, SyncOutlined, CheckOutlined } from '@ant-design/icons-vue'
 import Plugin from '../mixins/plugin'
-import { colorTheme } from '../composables/theme'
+import { setThemeMode } from '../composables/theme'
 
 export default {
   name: 'Setting',
@@ -13,8 +14,6 @@ export default {
       key: 'app',
       removeUserConfigLoading: false,
       reloadLoading: false,
-      urlBackup: null,
-      personalUrlBackup: null,
       maxLogFileSizeStep: 1, // 单位不同，值不同：GB=1，MB=100
       maxLogFileSizeUnit: [
         {
@@ -29,10 +28,6 @@ export default {
     }
   },
   methods: {
-    ready (config) {
-      this.urlBackup = config.app.remoteConfig.url
-      this.personalUrlBackup = config.app.remoteConfig.personalUrl
-    },
     getEventKey (event) {
       // 忽略以下键
       switch (event.key) {
@@ -192,21 +187,8 @@ export default {
       }
     },
     async applyAfter () {
-      let reloadLazy = 10
-
-      let theme = this.config.app.theme
-      if (theme === 'system') {
-        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-      }
-      colorTheme.value = theme
-
-      // 判断远程配置地址是否变更过，如果是则重载远程配置并重启服务
-      if (this.config.app.remoteConfig.url !== this.urlBackup || this.config.app.remoteConfig.personalUrl !== this.personalUrlBackup) {
-        await this.$api.config.downloadRemoteConfig()
-        await this.reloadConfigAndRestart()
-        reloadLazy = 300
-        setTimeout(() => window.location.reload(), reloadLazy)
-      }
+      // 应用主题设置
+      setThemeMode(this.config.app.theme)
 
       // 变更 “打开窗口快捷键”
       ipcRenderer.send('change-showHideShortcut', this.config.app.showHideShortcut)
@@ -218,70 +200,44 @@ export default {
       this.$api.autoStart.enabled(this.config.app.autoStart.enabled)
       this.saveConfig()
     },
-    async onRemoteConfigEnabledChange () {
-      await this.saveConfig()
-      if (this.config.app.remoteConfig.enabled === true) {
-        this.reloadLoading = true
-        try {
-          this.$message.info('开始下载远程配置')
-          await this.$api.config.downloadRemoteConfig()
-          this.$message.info('下载远程配置成功，开始重启代理服务和系统代理')
-          await this.reloadConfigAndRestart()
-        } finally {
-          this.reloadLoading = false
+    // 使用系统默认程序打开用户配置文件（config.json）
+    async openConfigFile () {
+      try {
+        const configPath = await this.$api.config.getUserConfigPath()
+        const errMsg = await this.$api.shell.openPath(configPath)
+        if (errMsg) {
+          this.$message.error(`打开配置文件失败：${errMsg}`)
         }
-      } else {
-        this.$message.info('远程配置已关闭，开始重启代理服务和系统代理')
-        await this.reloadConfigAndRestart()
+      } catch (e) {
+        this.$message.error(`打开配置文件失败：${(e && e.message) || e}`)
+        console.error('打开配置文件失败:', e)
       }
     },
-    async reloadRemoteConfig () {
-      if (this.config.app.remoteConfig.enabled === false) {
-        return
-      }
-
+    // 重新读取用户配置文件，并重启代理服务和系统代理，最后刷新页面以加载最新配置
+    async reloadConfigFile () {
       this.reloadLoading = true
       try {
-        const remoteConfig = {}
-
-        await this.$api.config.readRemoteConfigStr().then((ret) => {
-          remoteConfig.old1 = ret
-        })
-        await this.$api.config.readRemoteConfigStr('_personal').then((ret) => {
-          remoteConfig.old2 = ret
-        })
-        await this.$api.config.downloadRemoteConfig()
-        await this.$api.config.readRemoteConfigStr().then((ret) => {
-          remoteConfig.new1 = ret
-        })
-        await this.$api.config.readRemoteConfigStr('_personal').then((ret) => {
-          remoteConfig.new2 = ret
-        })
-
-        if (remoteConfig.old1 === remoteConfig.new1 && remoteConfig.old2 === remoteConfig.new2) {
-          this.$message.info('远程配置没有变化，不做任何处理。')
-          this.$message.warn('如果您确实修改了远程配置，请稍等片刻再重试！')
-        } else {
-          this.$message.success('获取到了最新的远程配置，开始重启代理服务和系统代理')
-          await this.reloadConfigAndRestart()
-        }
+        await this.reloadConfigAndRestart()
+        this.$message.success('配置文件已重新加载，界面即将刷新')
+        setTimeout(() => window.location.reload(), 300)
+      } catch (e) {
+        this.$message.error(`重新加载配置文件失败：${(e && e.message) || e}`)
+        console.error('重新加载配置文件失败:', e)
       } finally {
         this.reloadLoading = false
       }
     },
     async restoreFactorySettings () {
       this.$confirm({
-        title: '确定要恢复出厂设置吗？',
+        title: '确定要重置配置文件吗？',
         width: 610,
-        content: h => h('div', { class: 'restore-factory-settings' }, [
+        content: () => h('div', { class: 'restore-factory-settings' }, [
           h('hr'),
           h('div', [
             h('h3', '操作警告：'),
             h('div', [
               '该功能将备份您的所有页面的个性化配置，并重载',
-              h('span', '默认配置'),
-              '及',
-              h('span', '远程配置'),
+              h('span', '内置默认配置'),
               '，请谨慎操作！！！'
             ])
           ]),
@@ -306,10 +262,10 @@ export default {
             const result = await this.$api.config.removeUserConfig()
             if (result) {
               this.config = await this.$api.config.get()
-              this.$message.success('恢复出厂设置成功，开始重启代理服务和系统代理')
+              this.$message.success('配置文件已重置，开始重启代理服务和系统代理')
               await this.reloadConfigAndRestart()
             } else {
-              this.$message.info('已是出厂设置，无需恢复')
+              this.$message.info('配置文件已是空配置，无需重置')
             }
           } finally {
             this.removeUserConfigLoading = false
@@ -359,32 +315,6 @@ export default {
         </a-checkbox>
         <div class="form-help">
           修改后需要重启应用
-        </div>
-      </a-form-item>
-      <hr>
-      <a-form-item label="远程配置" :label-col="labelCol" :wrapper-col="wrapperCol">
-        <a-checkbox v-model:checked="config.app.remoteConfig.enabled" @change="onRemoteConfigEnabledChange">
-          启用远程配置
-        </a-checkbox>
-        <div class="form-help">
-          应用启动时会向下面的地址请求配置补丁，获得最新的优化后的github访问体验。<br>
-          如果您觉得远程配置有安全风险，请关闭此功能，或删除共享远程配置，仅使用个人远程配置。<br>
-          配置优先级：本地修改配置  >  个人远程配置  >  共享远程配置 > 默认配置
-        </div>
-      </a-form-item>
-      <a-form-item label="共享远程配置地址" :label-col="labelCol" :wrapper-col="wrapperCol">
-        <a-input v-model:value="config.app.remoteConfig.url" :title="config.app.remoteConfig.url" spellcheck="false" />
-      </a-form-item>
-      <a-form-item label="个人远程配置地址" :label-col="labelCol" :wrapper-col="wrapperCol">
-        <a-input v-model:value="config.app.remoteConfig.personalUrl" :title="config.app.remoteConfig.personalUrl" spellcheck="false" />
-      </a-form-item>
-      <a-form-item label="重载远程配置" :label-col="labelCol" :wrapper-col="wrapperCol">
-        <a-button :disabled="config.app.remoteConfig.enabled === false" :loading="reloadLoading" @click="reloadRemoteConfig()">
-          <SyncOutlined />重载远程配置
-        </a-button>
-        <div class="form-help">
-          注意，部分远程配置文件所在站点，修改内容后可能需要等待一段时间才能生效。<br>
-          如果重载远程配置后发现下载的还是修改前的内容，请稍等片刻再重试。
         </div>
       </a-form-item>
       <hr>
@@ -495,7 +425,7 @@ export default {
       </a-form-item>
       <a-form-item label="最大日志文件大小" :label-col="labelCol" :wrapper-col="wrapperCol">
         <a-input-number ref="maxLogFileSize" v-model:value="config.app.maxLogFileSize" :step="maxLogFileSizeStep" :min="0" spellcheck="false" />
-        <a-select v-model:value="config.app.maxLogFileSizeUnit" class="ml5" @change="onMaxLogFileSizeUnitChange">
+        <a-select v-model:value="config.app.maxLogFileSizeUnit" style="width:80px; margin-left:5px; vertical-align: middle" @change="onMaxLogFileSizeUnitChange">
           <a-select-option v-for="(item) of maxLogFileSizeUnit" :key="item.value" :value="item.value">
             {{ item.label }}
           </a-select-option>
@@ -515,8 +445,14 @@ export default {
 
     <template #footer>
       <div class="footer-bar">
+        <a-button class="mr10" @click="openConfigFile()">
+          <ProfileOutlined />打开配置文件
+        </a-button>
+        <a-button :loading="reloadLoading" class="mr10" @click="reloadConfigFile()">
+          <SyncOutlined />重载配置文件
+        </a-button>
         <a-button :loading="removeUserConfigLoading" class="mr10" @click="restoreFactorySettings()">
-          <SyncOutlined />恢复出厂设置
+          <SyncOutlined />重置配置文件
         </a-button>
         <a-button :loading="resetDefaultLoading" class="mr10" @click="resetDefault()">
           <SyncOutlined />恢复默认

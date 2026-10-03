@@ -30,27 +30,15 @@ const serverApi = {
       return this.close()
     }
   },
-  async start ({ mitmproxyPath, plugins }) {
+  async start ({ mitmproxyPath }) {
+    // 防止重复启动：如果已有子进程存活，直接返回
+    if (server && server.process && !server.process.killed && server.process.exitCode == null) {
+      log.warn('server is already running, skip start (pid:', server.id, ')')
+      return { port: server.port }
+    }
+
     const allConfig = config.get()
     const serverConfig = lodash.cloneDeep(allConfig.server)
-
-    const intercepts = serverConfig.intercepts
-    const dnsMapping = serverConfig.dns.mapping
-
-    if (allConfig.plugin) {
-      lodash.each(allConfig.plugin, (value) => {
-        const plugin = value
-        if (!plugin.enabled) {
-          return
-        }
-        if (plugin.intercepts) {
-          lodash.merge(intercepts, plugin.intercepts)
-        }
-        if (plugin.dns) {
-          lodash.merge(dnsMapping, plugin.dns)
-        }
-      })
-    }
 
     if (allConfig.app) {
       serverConfig.app = allConfig.app
@@ -60,14 +48,6 @@ const serverApi = {
       // 如果设置为关闭拦截
       serverConfig.intercepts = {}
     }
-
-    for (const key in plugins) {
-      const plugin = plugins[key]
-      if (plugin.overrideRunningConfig) {
-        plugin.overrideRunningConfig(serverConfig)
-      }
-    }
-    serverConfig.plugin = allConfig.plugin
 
     if (allConfig.proxy && allConfig.proxy.enabled) {
       serverConfig.proxy = allConfig.proxy
@@ -87,6 +67,7 @@ const serverApi = {
     server = {
       id: serverProcess.pid,
       process: serverProcess,
+      port: serverConfig.port,
       close () {
         serverProcess.send({ type: 'action', event: { key: 'close' } })
       },

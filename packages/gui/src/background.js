@@ -2,7 +2,8 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import DevSidecar from '@docmirror/dev-sidecar'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, systemPreferences, Tray } from 'electron'
+import fs from 'node:fs'
 import minimist from 'minimist'
 import backend from './bridge/backend.js'
 import jsonApi from '@docmirror/mitmproxy/src/json.js'
@@ -14,11 +15,47 @@ const isWindows = process.platform === 'win32'
 const isLinux = process.platform === 'linux'
 const isMac = process.platform === 'darwin'
 
+// 禁用不需要的 Chromium 组件以减少内存和 CPU 占用
+// 这些开关必须在 app.whenReady() 之前设置
+
+// ── 渲染器 / 进程限制 ──
+app.commandLine.appendSwitch('renderer-process-limit', '1') // 单个渲染器进程（默认是每个 CPU 核心一个）
+
+// ── 证书 / 网络 ──
+app.commandLine.appendSwitch('use-system-ca') // 使用系统证书库，信任 dev-sidecar 自签 CA
+
+// ── 功能开关 ──
+app.commandLine.appendSwitch('disable-pdf-viewer')                      // PDF 查看器
+app.commandLine.appendSwitch('disable-print-preview')                   // 打印预览
+app.commandLine.appendSwitch('disable-speech-api')                      // 语音识别/合成
+app.commandLine.appendSwitch('disable-gpu-rasterization')               // GPU 光栅化
+app.commandLine.appendSwitch('disable-accelerated-video-decode')        // 硬件视频解码
+app.commandLine.appendSwitch('disable-background-networking')           // 后台网络活动（同步/遥测）
+app.commandLine.appendSwitch('disable-sync')                            // Chrome 同步服务
+app.commandLine.appendSwitch('disable-default-apps')                    // 默认应用注册
+app.commandLine.appendSwitch('disable-component-update')                // 组件自动更新
+app.commandLine.appendSwitch('disable-client-side-phishing-detection')  // 钓鱼检测
+app.commandLine.appendSwitch('disable-domain-reliability')              // 域名可靠性监控
+
+// ── 通过 --disable-features 禁用的 Chromium Feature 列表 ──
+app.commandLine.appendSwitch('disable-features', [
+  'MediaRouter',              // 投屏 / 媒体路由
+  'WebRTC',                   // 实时通信（视频/音频通话）
+  'SensorAPI',                // 传感器 API（陀螺仪/加速度计等）
+  'GamepadAPI',               // 游戏手柄 API
+  'ColorCorrectRendering',    // 显示颜色校正
+  'SerializeBackingStores',   // 页面内容序列化到磁盘缓存
+  'CrashReporting',           // Chromium 崩溃报告（已有自身日志）
+  'TranslateUI',              // 翻译 UI
+  'AutofillServerCommunication', // 自动填充服务器通信
+  'SafeBrowsing',             // 安全浏览（URL 黑名单检查）
+  'NotificationTriggers',     // 定时通知
+  'WebPayments',              // 支付请求 API
+  'BackgroundFetch',          // 后台下载
+].join(','))
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDevelopment = process.env.NODE_ENV !== 'production'
-const staticPath = isDevelopment
-  ? path.resolve('public')
-  : path.join(app.getAppPath(), 'dist')
 
 let _powerMonitor = powerMonitor
 
@@ -28,6 +65,7 @@ let win
 let winIsHidden = false
 
 let tray // 防止被内存清理
+let trayIconRootPath // 托盘图标目录，同时给退出时的气泡通知找图标
 let forceClose = false
 
 try {
@@ -72,8 +110,6 @@ function switchDevTools () {
 
 // 隐藏主窗口，并创建托盘，绑定关闭事件
 function setTray () {
-  // const topMenu = Menu.buildFromTemplate({})
-  // Menu.setApplicationMenu(topMenu)
   // 用一个 Tray 来表示一个图标,这个图标处于正在运行的系统的通知区
   // 通常被添加到一个 context menu 上.
   // 系统托盘右键菜单
@@ -94,12 +130,19 @@ function setTray () {
     },
   ]
   // 设置系统托盘图标
-  const iconRootPath = path.join(__dirname, '../extra/icons/tray')
+  // 生产模式下 extra 在 resources/extra/（asar 外），开发模式下在项目根目录的 extra/
+  const appPath = app.getAppPath()
+  let iconRootPath = path.join(appPath, 'extra', 'icons', 'tray')
+  if (!fs.existsSync(path.join(iconRootPath, 'icon.png'))) {
+    // extra 在 asar 外，需要从 asar 路径向上一级
+    iconRootPath = path.join(path.dirname(appPath), 'extra', 'icons', 'tray')
+  }
   let iconPath = path.join(iconRootPath, 'icon.png')
   const iconWhitePath = path.join(iconRootPath, 'icon-white.png')
   const iconBlackPath = path.join(iconRootPath, 'icon-black.png')
+  trayIconRootPath = iconRootPath
   if (isMac) {
-    iconPath = nativeTheme.shouldUseDarkColors ? iconWhitePath : iconBlackPath
+    iconPath = isSystemDarkMode() ? iconWhitePath : iconBlackPath
   }
 
   const trayIcon = nativeImage.createFromPath(iconPath)
@@ -109,7 +152,7 @@ function setTray () {
   if (isMac) {
     nativeTheme.on('updated', () => {
       log.info('i am changed')
-      if (nativeTheme.shouldUseDarkColors) {
+      if (isSystemDarkMode()) {
         log.info('i am dark.')
         tray.setImage(iconWhitePath)
       } else {
@@ -124,7 +167,7 @@ function setTray () {
   const contextMenu = Menu.buildFromTemplate(trayMenuTemplate)
 
   // 设置托盘悬浮提示
-  appTray.setToolTip('DevSidecar-开发者边车辅助工具')
+  appTray.setToolTip('DevSidecar-Lite-开发者边车辅助工具')
   // 单击托盘小图标显示应用
   appTray.on('click', () => {
     // 显示主程序
@@ -196,15 +239,65 @@ function changeAppConfig (config) {
   }
 }
 
+function loadAppIcon () {
+  // 优先：从 asar 内读取（fs.readFileSync 被 Electron 补丁支持 asar）
+  try {
+    const p = path.join(app.getAppPath(), 'dist', 'icon.png')
+    if (fs.existsSync(p)) return nativeImage.createFromBuffer(fs.readFileSync(p))
+  } catch { /* ignore */ }
+  // 回退：asar.unpacked 真实路径
+  try {
+    const p = path.join(app.getAppPath(), '..', 'app.asar.unpacked', 'dist', 'icon.png')
+    if (fs.existsSync(p)) return nativeImage.createFromPath(p)
+  } catch { /* ignore */ }
+  // 开发模式回退
+  return nativeImage.createFromPath(path.resolve('public/icon.png'))
+}
+
+/**
+ * 系统（而不是应用内主题）当前是否处于深色模式。
+ * 托盘图标要跟系统任务栏/菜单栏保持一致，而 nativeTheme.themeSource 被应用主题覆盖后，
+ * 会连带影响 nativeTheme.shouldUseDarkColors，所以 macOS 上直接读系统的 AppleInterfaceStyle。
+ * @returns {boolean}
+ */
+function isSystemDarkMode () {
+  if (isMac) {
+    return systemPreferences.getUserDefault('AppleInterfaceStyle', 'string') === 'Dark'
+  }
+  return nativeTheme.shouldUseDarkColors
+}
+
+/**
+ * 让窗口标题栏、原生右键菜单、文件选择框等「原生界面」跟随应用内的主题设置。
+ * 这些界面由操作系统绘制，CSS 里的 data-theme 对它们无效；
+ * 主进程只有设置 nativeTheme.themeSource，Electron 才会把窗口边框画成深色。
+ * @param {'light' | 'dark' | 'system'} mode 应用配置 app.theme 的值
+ */
+function applyNativeTheme (mode) {
+  const themeSource = ['light', 'dark', 'system'].includes(mode) ? mode : 'system'
+  if (nativeTheme.themeSource === themeSource) {
+    return
+  }
+  nativeTheme.themeSource = themeSource
+  log.info('原生界面主题（标题栏/菜单）切换为:', themeSource)
+}
+
+// 渲染进程每次切换主题都会通知过来，见 view/composables/theme.js 的 notifyNativeTheme
+ipcMain.on('window-theme-mode', (event, mode) => {
+  applyNativeTheme(mode)
+})
+
 function createWindow (startHideWindow, autoQuitIfError = true) {
+  // 窗口创建之前先定好主题，避免启动瞬间闪一下浅色标题栏
+  applyNativeTheme(DevSidecar.api.config.get().app.theme)
   // Create the browser window.
   const windowSize = DevSidecar.api.config.get().app.windowSize || {}
 
   try {
     win = new BrowserWindow({
       width: windowSize.width || 900,
-      height: windowSize.height || 750,
-      title: 'DevSidecar',
+      height: windowSize.height || 550,
+      title: 'DevSidecar-Lite',
       webPreferences: {
         enableRemoteModule: true,
         contextIsolation: false,
@@ -214,7 +307,7 @@ function createWindow (startHideWindow, autoQuitIfError = true) {
         nodeIntegration: true, // process.env.ELECTRON_NODE_INTEGRATION
       },
       show: !startHideWindow,
-      icon: path.join(staticPath, 'icon.png'),
+      icon: loadAppIcon(),
     })
   } catch (e) {
     log.error('创建窗口失败:', e)
@@ -360,7 +453,14 @@ async function quit (reason) {
   log.info('app quit:', reason)
 
   if (tray) {
-    tray.displayBalloon({ title: '正在关闭', content: '关闭中,请稍候。。。' })
+    const balloonIconPath = trayIconRootPath ? path.join(trayIconRootPath, '..', 'balloon-icon.png') : null
+    const balloonOptions = { title: 'DevSidecar-Lite', content: '关闭中,请稍候。。。' }
+    if (balloonIconPath && fs.existsSync(balloonIconPath)) {
+      // 用独立的大图做气泡图标，否则 Windows 会拿 16px 的托盘小图放大，很糊
+      balloonOptions.icon = nativeImage.createFromPath(balloonIconPath)
+      balloonOptions.iconType = 'custom'
+    }
+    tray.displayBalloon(balloonOptions)
   }
   await beforeQuit()
   forceClose = true
@@ -401,7 +501,12 @@ function registerShowHideShortcut (showHideShortcut) {
 function initApp () {
   if (isMac) {
     app.whenReady().then(() => {
-      app.dock.setIcon(path.join(__dirname, '../extra/icons/512x512-2.png'))
+      const appPath = app.getAppPath()
+      let iconPath = path.join(appPath, 'extra', 'icons', '512x512-2.png')
+      if (!fs.existsSync(iconPath)) {
+        iconPath = path.join(path.dirname(appPath), 'extra', 'icons', '512x512-2.png')
+      }
+      app.dock.setIcon(iconPath)
     })
   }
 

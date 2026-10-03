@@ -1,11 +1,10 @@
-const fs = require('node:fs')
 const path = require('node:path')
+const fs = require('node:fs')
 const lodash = require('lodash')
 const { LRUCache } = require('lru-cache')
 const dnsUtil = require('./lib/dns')
 const interceptorImpls = require('./lib/interceptor')
 const scriptInterceptor = require('./lib/interceptor/impl/res/script')
-const { getTmpPacFilePath, downloadPacAsync, createOverwallMiddleware } = require('./lib/proxy/middleware/overwall')
 const log = require('./utils/util.log.server')
 const matchUtil = require('./utils/util.match')
 
@@ -73,47 +72,27 @@ module.exports = (serverConfig) => {
   const setting = serverConfig.setting
 
   if (!setting.script.dirAbsolutePath) {
-    setting.script.dirAbsolutePath = path.join(setting.rootDir, setting.script.defaultDir)
+    // 脚本目录可能位于不同位置，依次探测并取第一个真实存在的目录：
+    // 1. rootDir + defaultDir（开发环境为 packages/gui/src/extra/scripts，安装版为 app.asar 内的路径，通常不存在）
+    // 2. 进程工作目录 + defaultDir（开发环境从 packages/gui 启动时，即 packages/gui/extra/scripts）
+    // 3. process.resourcesPath + defaultDir（安装版，即 resources/extra/scripts）
+    // 4. 安装版中 app.asar 的同级目录 + defaultDir（resourcePath 不可用时的兜底）
+    const scriptDirCandidates = [
+      path.join(setting.rootDir, setting.script.defaultDir),
+      path.join(process.cwd(), setting.script.defaultDir),
+      process.resourcesPath ? path.join(process.resourcesPath, setting.script.defaultDir) : null,
+      path.join(setting.rootDir.replace(/[\\/]app\.asar.*$/i, ''), setting.script.defaultDir),
+    ].filter(dir => dir != null)
+    setting.script.dirAbsolutePath = scriptDirCandidates.find(dir => fs.existsSync(dir)) || scriptDirCandidates[0]
+    log.info('script dir:', setting.script.dirAbsolutePath)
   }
   if (setting.verifySsl !== false) {
     setting.verifySsl = true
   }
   setting.timeoutMapping = timeoutMapping
 
-  const overWallConfig = serverConfig.plugin.overwall
-  if (overWallConfig.pac && overWallConfig.pac.enabled) {
-    const pacConfig = overWallConfig.pac
-
-    // 自动更新 pac.txt
-    if (!pacConfig.pacFileAbsolutePath && pacConfig.autoUpdate) {
-      // 异步下载远程 pac.txt 文件，并保存到本地；下载成功后，需要重启代理服务才会生效
-      downloadPacAsync(pacConfig)
-    }
-
-    // 优先使用本地已下载的 pac.txt 文件
-    if (!pacConfig.pacFileAbsolutePath && fs.existsSync(getTmpPacFilePath())) {
-      pacConfig.pacFileAbsolutePath = getTmpPacFilePath()
-      log.info('读取已下载的 pac.txt 文件:', pacConfig.pacFileAbsolutePath)
-    }
-
-    if (!pacConfig.pacFileAbsolutePath) {
-      log.info('setting.rootDir:', setting.rootDir)
-      pacConfig.pacFileAbsolutePath = path.join(setting.rootDir, pacConfig.pacFilePath)
-      log.info('读取内置的 pac.txt 文件:', pacConfig.pacFileAbsolutePath)
-      if (pacConfig.autoUpdate) {
-        log.warn('远程 pac.txt 文件下载失败或还在下载中，现使用内置 pac.txt 文件:', pacConfig.pacFileAbsolutePath)
-      }
-    }
-  }
-
   // 插件列表
   const middlewares = []
-
-  // 梯子插件：如果启用了，则添加到插件列表中
-  const overwallMiddleware = createOverwallMiddleware(overWallConfig)
-  if (overwallMiddleware) {
-    middlewares.push(overwallMiddleware)
-  }
 
   const preSetIpList = matchUtil.domainMapRegexply(serverConfig.preSetIpList)
 

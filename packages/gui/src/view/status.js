@@ -8,9 +8,6 @@ const status = reactive({
   proxy: {
     enabled: false,
   },
-  plugin: {
-    node: {},
-  },
 })
 async function install (app, api) {
   api.ipc.on('status', (event, message) => {

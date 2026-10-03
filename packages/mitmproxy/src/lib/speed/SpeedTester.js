@@ -1,4 +1,3 @@
-// const { exec } = require('node:child_process')
 const net = require('node:net')
 const _ = require('lodash')
 const log = require('../../utils/util.log.server')
@@ -8,9 +7,10 @@ const { configFromFiles } = require('@docmirror/dev-sidecar/src/config/index.js'
 
 const familyMapping = matchUtil.domainMapRegexply(configFromFiles.server.dns.familyMapping)
 
-// const isWindows = process.platform === 'win32'
-
 const DISABLE_TIMEOUT = 60 * 60 * 1000
+// 实际请求失败过的 IP 的冷却时间：TCP 能连上不代表能用（被 RST/黑洞的 IP 也能完成三次握手），
+// 冷却期内即使 TCP 测速成功也不重新启用，避免“能连但一用就断”的 IP 长期占据 alive[0]
+const FAILED_IP_COOLDOWN = 10 * 60 * 1000
 
 class SpeedTester {
   constructor ({ hostname, port }) {
@@ -31,11 +31,62 @@ class SpeedTester {
     this.isTesting = false
     this.isTestingBackups = false
 
+    this._probeIndex = 0 // 按需探测的轮转索引
+
     this.test() // 异步：初始化完成后先测速一次
+  }
+
+  // 按需探测：SpeedTester 未就绪时，轮转分配未失败 IP，并发请求自动分散
+  pickNextForProbing () {
+    // 第一轮：优先选未探测、未失败的 IP
+    const fresh = this.backupList.filter(item =>
+      item.status !== 'failed' && !item._probing,
+    )
+    if (fresh.length > 0) {
+      this._probeIndex = this._probeIndex % fresh.length
+      const pick = fresh[this._probeIndex]
+      this._probeIndex++
+      pick._probing = true
+      return pick
+    }
+    // 第二轮：全部都在探测中，允许复用，总比回退到 DNS 缓存好
+    const retry = this.backupList.filter(item => item.status !== 'failed')
+    if (retry.length > 0) {
+      this._probeIndex = this._probeIndex % retry.length
+      return retry[this._probeIndex++]
+    }
+    return null
+  }
+
+  // 按需探测结果反馈：记录 IP 成败，供后续请求决策
+  reportProbeResult (host, success) {
+    const item = this.backupList.find(i => i.host === host)
+    if (!item) return
+    item._probing = false
+    if (success) {
+      item.status = 'success'
+      item.time = item.time || 1
+      item.failTime = null
+      // alive 里可能是 _doTest 放进去的副本，这里按 host 去重，避免每次成功都往数组里塞重复项
+      if (!this.alive.some(i => i.host === item.host)) {
+        this.alive.push(item)
+      }
+    } else {
+      item.status = 'failed'
+      item.failTime = Date.now()
+      item.failCount = (item.failCount || 0) + 1
+      // 关键修复：失败 IP 必须从 alive 中剔除，否则 pickFastAliveIpObj() 会一直返回它
+      this.alive = this.alive.filter(i => i.host !== host)
+    }
   }
 
   pickFastAliveIpObj () {
     this.touch()
+
+    // 兜底：alive 中可能残留历史失败项
+    if (this.alive.length > 0 && this.alive.some(i => i.status === 'failed')) {
+      this.alive = this.alive.filter(i => i.status !== 'failed')
+    }
 
     if (this.alive.length === 0) {
       if (this.backupList.length > 0 && this.tryTestCount % 10 > 0) {
@@ -174,6 +225,17 @@ class SpeedTester {
     try {
       const ret = await this.testOne(item)
       item.title = `${ret.by}测速成功：${ret.target}`
+      // 冷却期内的 IP 不复活：TCP 通的 IP 也可能一用就被 RST（TCP 握手不代表可用）
+      if (item.failTime && Date.now() - item.failTime < FAILED_IP_COOLDOWN) {
+        const now = Date.now()
+        const hasOtherCandidate = this.backupList.some(i => i.host !== item.host && (!i.failTime || now - i.failTime >= FAILED_IP_COOLDOWN))
+        if (hasOtherCandidate) {
+          log.warn(`[speed] test success but ip in failed-cooldown: ${this.hostname} ➜ ${item.host}:${this.port} from DNS '${item.dns}', failCount: ${item.failCount}`)
+          return
+        }
+        // 所有备用 IP 都在冷却中：宁可再试一次，也不能让 alive 为空（否则会退化成系统 DNS）
+        log.warn(`[speed] all backup ip in failed-cooldown, revive it: ${this.hostname} ➜ ${item.host}:${this.port} from DNS '${item.dns}'`)
+      }
       log.info(`[speed] test success: ${this.hostname} ➜ ${item.host}:${this.port} from DNS '${item.dns}'`)
       _.merge(item, ret)
       aliveList.push({ ...ret, ...item })
@@ -225,62 +287,6 @@ class SpeedTester {
     })
   }
 
-  // 暂不使用
-  // testByPing (item) {
-  //   return new Promise((resolve, reject) => {
-  //     const { host, dns } = item
-  //     const startTime = Date.now()
-  //
-  //     // 设置超时程序
-  //     let isOver = false
-  //     const timeout = 5000
-  //     const timeoutId = setTimeout(() => {
-  //       if (!isOver) {
-  //         log.warn('[speed] test by PING timeout:', this.hostname, `➜ ${host} from DNS '${dns}', cost: ${Date.now() - startTime} ms`)
-  //         reject(new Error('timeout'))
-  //       }
-  //     }, timeout)
-  //
-  //     // 协议选择（如强制ping6）
-  //     const usePing6 = !isWindows && host.includes(':') // Windows无ping6命令
-  //     const cmd = usePing6
-  //       ? `ping6 -c 2 ${host}`
-  //       : isWindows
-  //         ? `ping -n 2 ${host}`
-  //         : `ping -c 2 ${host}`
-  //
-  //     log.debug('[speed] test by PING start:', this.hostname, `➜ ${host} from DNS '${dns}'`)
-  //     exec(cmd, (error, stdout, _stderr) => {
-  //       isOver = true
-  //       clearTimeout(timeoutId)
-  //
-  //       if (error) {
-  //         log.warn('[speed] test by PING error:', this.hostname, `➜ ${host} from DNS '${dns}', cost: ${Date.now() - startTime} ms, error: 目标不可达或超时`)
-  //         reject(new Error('目标不可达或超时'))
-  //         return
-  //       }
-  //
-  //       // 提取延迟数据（正则匹配）
-  //       const regex = /[=<](\d+(?:\.\d*)?)ms/gi // 适配Linux/Windows
-  //       const times = []
-  //       let match
-  //       // eslint-disable-next-line no-cond-assign
-  //       while ((match = regex.exec(stdout)) !== null) {
-  //         times.push(Number.parseFloat(match[1]))
-  //       }
-  //
-  //       if (times.length === 0) {
-  //         log.warn('[speed] test by PING error:', this.hostname, `➜ ${host} from DNS '${dns}', cost: ${Date.now() - startTime} ms, error: 无法解析延迟`)
-  //         reject(new Error('无法解析延迟'))
-  //       } else {
-  //         // 计算平均延迟
-  //         const avg = times.reduce((a, b) => a + b, 0) / times.length
-  //         resolve({ status: 'success', by: 'PING', target: host, time: Math.round(avg) })
-  //       }
-  //     })
-  //   })
-  // }
-
   testOne (item) {
     return new Promise((resolve, reject) => {
       const thenFun = (ret) => {
@@ -291,13 +297,6 @@ class SpeedTester {
       this.testByTCP(item)
         .then(thenFun)
         .catch((e) => {
-          // // TCP测速失败，再用 PING 测速
-          // this.testByPing(item)
-          //   .then(thenFun)
-          //   .catch((e2) => {
-          //     reject(new Error(`TCP测速失败：${e.message}；PING测速失败：${e2.message}；`))
-          //   })
-
           reject(new Error(`TCP测速失败：${item.host}:${this.port} ${e.message}`))
         })
     })

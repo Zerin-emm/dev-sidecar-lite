@@ -66,16 +66,6 @@ function getUserConfig () {
   return loadConfigFromFile(configFilePath)
 }
 
-function getRemoteConfigPath (suffix = '') {
-  const dir = getUserBasePath()
-  return path.join(dir, `/remote_config${suffix}.json5`)
-}
-
-function getRemoteConfig (suffix = '') {
-  const remoteConfigFilePath = getRemoteConfigPath(suffix)
-  return loadConfigFromFile(remoteConfigFilePath)
-}
-
 function getAutomaticCompatibleConfigPath () {
   const dir = getUserBasePath()
   return path.join(dir, '/automaticCompatibleConfig.json')
@@ -88,25 +78,16 @@ function getAutomaticCompatibleConfigPath () {
  * @param defaultConfig 默认配置
  */
 function getConfigFromFiles (userConfig, defaultConfig) {
-  const merged = userConfig != null ? lodash.cloneDeep(userConfig) : {}
-
-  const personalRemoteConfig = getRemoteConfig('_personal')
-  const shareRemoteConfig = getRemoteConfig()
-
-  mergeApi.doMerge(merged, personalRemoteConfig) // 先合并一次个人远程配置，使配置顺序在前
-  mergeApi.doMerge(merged, shareRemoteConfig) // 先合并一次共享远程配置，使配置顺序在前
-  mergeApi.doMerge(merged, defaultConfig) // 合并默认配置，顺序排在最后
-  mergeApi.doMerge(merged, shareRemoteConfig) // 再合并一次共享远程配置，使配置生效
-  mergeApi.doMerge(merged, personalRemoteConfig) // 再合并一次个人远程配置，使配置生效
+  const merged = defaultConfig != null ? lodash.cloneDeep(defaultConfig) : {}
 
   if (userConfig != null) {
-    mergeApi.doMerge(merged, userConfig) // 再合并一次用户配置，使用户配置重新生效
+    mergeApi.doMerge(merged, userConfig) // 用户配置优先级最高，最后合并
   }
 
   // 删除为null及[delete]的项
   mergeApi.deleteNullItems(merged)
 
-  logOrConsole.info('加载及合并远程配置完成')
+  logOrConsole.info('加载及合并用户配置完成')
   return merged
 }
 
@@ -117,9 +98,6 @@ module.exports = {
 
   getUserConfigPath,
   getUserConfig,
-
-  getRemoteConfigPath,
-  getRemoteConfig,
 
   getAutomaticCompatibleConfigPath,
 

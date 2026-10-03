@@ -35,7 +35,7 @@ export default defineComponent({
       帮助中心
     </template>
     <template #header-right>
-      <a-button class="mr10" @click="openExternal('https://github.com/docmirror/dev-sidecar/issues/new/choose')">反馈问题</a-button>
+      <a-button class="mr10" @click="openExternal('https://zcn2uzvdaiwh.feishu.cn/wiki/NQ8KwC8FTiEWNYkNCXkcK4ganOe')">反馈问题</a-button>
       <a-button class="mr10" @click="openLog()"><ProfileOutlined />查看日志</a-button>
     </template>
 

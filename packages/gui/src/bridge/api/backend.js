@@ -1,15 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import DevSidecar from '@docmirror/dev-sidecar'
-import { app, ipcMain } from 'electron'
+import { app, ipcMain, shell } from 'electron'
 import lodash from 'lodash'
 import jsonApi from '@docmirror/mitmproxy/src/json.js'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const pk = require('../../../package.json')
 import coreDefaultConfig from '@docmirror/dev-sidecar/src/config/index.js'
-import configLoader from '@docmirror/dev-sidecar/src/config/local-config-loader.js'
 import log from '../../utils/util.log.gui.js'
 import dateUtil from '@docmirror/dev-sidecar/src/utils/util.date.js'
 
@@ -56,27 +56,12 @@ const localApi = {
   },
   info: {
     get () {
-      const runtimeConfig = DevSidecar.api.config.get()
-      const remoteConfig = lodash.get(runtimeConfig, 'app.remoteConfig') || {}
-
       const internal = getMetaInfo(coreDefaultConfig, '')
-      const sharedRemote = getMetaInfo(configLoader.getRemoteConfig(), '')
-      const personalRemote = getMetaInfo(configLoader.getRemoteConfig('_personal'), '')
 
       return {
         version: pk.version,
         configProfiles: {
           internal,
-          sharedRemote: {
-            ...sharedRemote,
-            url: remoteConfig.url || '',
-            enabled: remoteConfig.enabled === true && Boolean(remoteConfig.url),
-          },
-          personalRemote: {
-            ...personalRemote,
-            url: remoteConfig.personalUrl || '',
-            enabled: remoteConfig.enabled === true && Boolean(remoteConfig.personalUrl),
-          },
         },
       }
     },
@@ -109,10 +94,6 @@ const localApi = {
           setting = {}
         }
       }
-      if (setting.overwall == null) {
-        setting.overwall = false
-      }
-
       if (setting.installTime == null) {
         // 设置安装时间
         setting.installTime = dateUtil.now()
@@ -193,6 +174,30 @@ const localApi = {
       return DevSidecar.api.server.restart({ mitmproxyPath })
     },
   },
+  shell: {
+    /**
+     * 使用 Electron 主进程原生 API 打开文件（避免 cmd.exe start 权限问题）
+     * 系统没有该文件类型的默认打开程序时（ShellExecute 失败），回退到记事本打开
+     * @returns {Promise<string>} 空字符串表示成功，非空字符串为错误信息
+     */
+    async openPath (filePath) {
+      const absPath = path.resolve(filePath)
+      const errMsg = await shell.openPath(absPath)
+      if (!errMsg) {
+        return ''
+      }
+
+      log.info('使用系统默认程序打开文件失败，尝试使用记事本打开:', absPath, ', error:', errMsg)
+      try {
+        const child = spawn('notepad.exe', [absPath], { detached: true, stdio: 'ignore' })
+        child.unref()
+        return ''
+      } catch (e) {
+        log.error('使用记事本打开文件也失败:', absPath, ', error:', e)
+        return errMsg
+      }
+    },
+  },
 }
 
 function _deepFindFunction (list, parent, parentKey) {
@@ -236,8 +241,6 @@ function invoke (api, param) {
 }
 
 async function doStart () {
-  // 开启自动下载远程配置
-  await DevSidecar.api.config.startAutoDownloadRemoteConfig()
   emitConfigChanged()
   // 启动所有
   localApi.startup()

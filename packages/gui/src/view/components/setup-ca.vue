@@ -27,12 +27,13 @@ export default defineComponent({
 
   computed: {
     setupImage () {
+      const base = process.env.BASE_URL || './'
       if (this.systemPlatform === 'mac') {
-        return '/setup-mac.png'
+        return `${base}setup-mac.png`
       } else if (this.systemPlatform === 'linux') {
-        return '/setup-linux.png'
+        return `${base}setup-linux.png`
       } else {
-        return '/setup.png'
+        return `${base}setup.png`
       }
     },
   },
@@ -54,10 +55,9 @@ export default defineComponent({
       this.$emit('update:open', false)
     },
     async doSetup () {
+      // 不要在 emit 之后立刻报成功：安装是异步的，而且可能失败。
+      // 成功/失败提示统一交给 index.vue 的 handleCaSetuped 在拿到真实结果后给出。
       this.$emit('setup')
-      if (this.systemPlatform === 'linux') {
-        this.$message.success('根证书已成功安装到系统证书库（注意：浏览器仍然需要手动安装）')
-      }
     },
   },
 });
@@ -97,10 +97,10 @@ export default defineComponent({
         2、<b color="red">火狐、chrome等浏览器不走系统证书</b>，需要手动安装(下图以chrome为例安装根证书)<br>
       </template>
       <template v-else>
-        1、点击右上角“点此去安装按钮”，打开证书<br>
-        2、然后按如下图步骤将根证书添加到<b style="color:red">信任的根证书颁发机构</b>
+        1、点击右上角“点此去安装按钮”，会自动安装到当前用户的<b style="color:red">受信任的根证书颁发机构</b>（不需要管理员权限，也不会弹出证书导入向导）<br>
+        2、安装完成后可能需要重新启动浏览器才会生效
       </template>
     </div>
-    <img width="100%" :src="setupImage">
+    <img v-if="systemPlatform !== 'windows'" width="100%" :src="setupImage">
   </a-drawer>
 </template>

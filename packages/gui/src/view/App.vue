@@ -1,11 +1,10 @@
 <script>
-import { h } from 'vue';
 import * as Icons from '@ant-design/icons-vue';
 
 import { ipcRenderer } from 'electron'
 import createMenus from '@/view/router/menu'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
-import { colorTheme } from './composables/theme'
+import { appliedTheme, initTheme, getAntThemeConfig } from './composables/theme'
 
 export default {
   name: 'App',
@@ -16,14 +15,12 @@ export default {
       info: {
         configProfiles: {
           internal: {},
-          sharedRemote: {},
-          personalRemote: {},
         },
       },
       config: undefined,
       configReadyPromise: null,
       selectedKeys: [],
-      openKeys: ['/plugin'],
+      openKeys: [],
       menus: [],
       hideSearchBar: true,
       searchBarIsFocused: false,
@@ -32,53 +29,39 @@ export default {
   },
 
   computed: {
-    themeClass() {
-      return `theme-${this.theme}`
-    },
     theme() {
-      return colorTheme.value
+      return appliedTheme.value
     },
-    // 将菜单数据转换为 items 格式
-    menuItems() {
-      return (this.menus || []).map(item => {
-        const iconName = item.icon
-          ? item.icon.replace(/(^|-)(\w)/g, (_, _s, c) => c.toUpperCase()) + 'Outlined'
-          : 'FileOutlined'
-        const IconComponent = Icons[iconName]
-
-        if (item.children && item.children.length > 0) {
-          return {
-            key: item.path,
-            icon: () => h(IconComponent),
-            label: item.title,
-            children: item.children.map(child => {
-              const childIconName = child.icon
-                ? child.icon.replace(/(^|-)(\w)/g, (_, _s, c) => c.toUpperCase()) + 'Outlined'
-                : 'FileOutlined'
-              const ChildIconComponent = Icons[childIconName]
-              return {
-                key: child.path,
-                icon: () => h(ChildIconComponent),
-                label: child.title,
-              }
-            }),
-          }
-        }
-        return {
-          key: item.path,
-          icon: () => h(IconComponent),
-          label: item.title,
-        }
-      })
+    themeConfig() {
+      return getAntThemeConfig(this.theme === 'dark')
     },
     isPreRelease () {
       const version = this.info && this.info.version
       return typeof version === 'string' && version.includes('-')
     },
+    // 预计算菜单图标引用，避免 ant-design-vue 渲染上下文无法访问 $options 方法
+    menuIconMap () {
+      const map = {}
+      for (const item of this.menus) {
+        const iconName = item.icon
+          ? item.icon.replace(/(^|-)(\w)/g, (_, _s, c) => c.toUpperCase()) + 'Outlined'
+          : 'FileOutlined'
+        map[item.path] = Icons[iconName]
+        if (item.children) {
+          for (const child of item.children) {
+            const cIconName = child.icon
+              ? child.icon.replace(/(^|-)(\w)/g, (_, _s, c) => c.toUpperCase()) + 'Outlined'
+              : 'FileOutlined'
+            map[child.path] = Icons[cIconName]
+          }
+        }
+      }
+      return map
+    },
   },
 
   created() {
-    this.menus = createMenus(this)
+    this.menus = createMenus()
     this.configReadyPromise = this.refreshConfigAndInfo()
     ipcRenderer.on('config.changed', this.onConfigChanged)
 
@@ -125,13 +108,10 @@ export default {
       await this.configReadyPromise
     }
 
+    // 初始化主题系统
     const appConfig = (this.config && this.config.app) || (this.$global && this.$global.config && this.$global.config.app) || {}
-    let theme = appConfig.theme || 'dark'
-    if (appConfig.theme === 'system') {
-      theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-    }
-
-    colorTheme.value = theme
+    const initialThemeMode = appConfig.theme || 'dark'
+    this.cleanupTheme = initTheme(initialThemeMode)
 
     // 设置默认选中的菜单项
     this.updateSelectedKeys(this.$route.fullPath)
@@ -139,6 +119,10 @@ export default {
 
   beforeUnmount() {
     ipcRenderer.removeListener('config.changed', this.onConfigChanged)
+    // 清理主题监听器
+    if (this.cleanupTheme) {
+      this.cleanupTheme()
+    }
   },
 
   methods: {
@@ -166,45 +150,39 @@ export default {
       await this.refreshConfigAndInfo()
     },
     updateSelectedKeys(currentPath) {
-      // 查找匹配的菜单项
       for (const item of this.menus || []) {
-        if (item.children && item.children.length > 0) {
-          for (const sub of item.children) {
-            if (sub.path === currentPath) {
-              this.selectedKeys = [sub.path]
+        if (item.path === currentPath) {
+          this.selectedKeys = [item.path]
+          return
+        }
+        if (item.children) {
+          for (const child of item.children) {
+            if (child.path === currentPath) {
+              this.selectedKeys = [child.path]
+              if (!this.openKeys.includes(item.path)) {
+                this.openKeys = [...this.openKeys, item.path]
+              }
               return
             }
           }
-        } else if (item.path === currentPath) {
-          this.selectedKeys = [item.path]
-          return
         }
       }
       // 默认选中第一个菜单项
       if (this.menus && this.menus.length > 0) {
-        const firstItem = this.menus[0]
-        if (firstItem.children && firstItem.children.length > 0) {
-          this.selectedKeys = [firstItem.children[0].path]
-        } else {
-          this.selectedKeys = [firstItem.path]
-        }
+        this.selectedKeys = [this.menus[0].path]
       }
     },
     handleMenuClick({ key }) {
       console.log('menu click:', key)
       window.config.disableSearchBar = false
-      // 找到对应的菜单项
-      for (const item of this.menus || []) {
-        if (item.path === key) {
-          this.$router.replace(key)
-          this.selectedKeys = [key]
-          return
-        }
+      this.$router.replace(key)
+      this.selectedKeys = [key]
+      // 确保点击子菜单项时父级保持展开
+      for (const item of this.menus) {
         if (item.children) {
-          for (const sub of item.children) {
-            if (sub.path === key) {
-              this.$router.replace(key)
-              this.selectedKeys = [key]
+          for (const child of item.children) {
+            if (child.path === key && !this.openKeys.includes(item.path)) {
+              this.openKeys = [...this.openKeys, item.path]
               return
             }
           }
@@ -258,19 +236,39 @@ export default {
 </script>
 
 <template>
-  <a-config-provider :locale="locale">
-    <div class="ds_layout" :class="themeClass">
+  <a-config-provider :locale="locale" :theme="themeConfig">
+    <div class="ds_layout">
       <a-layout>
-        <a-layout-sider :theme="theme" style="overflow-y: auto">
+        <a-layout-sider :style="{ background: theme === 'dark' ? '#1e1f22' : '#ffffff', overflowY: 'auto' }">
           <div class="logo" />
           <div class="aside">
             <a-menu
               mode="inline"
               v-model:selectedKeys="selectedKeys"
               v-model:openKeys="openKeys"
-              :items="menuItems"
               @click="handleMenuClick"
-            />
+            >
+              <template v-for="item in menus" :key="item.path">
+                <a-sub-menu v-if="item.children && item.children.length" :key="item.path">
+                  <template #icon>
+                    <component :is="menuIconMap[item.path]" />
+                  </template>
+                  <template #title>{{ item.title }}</template>
+                  <a-menu-item v-for="child in item.children" :key="child.path">
+                    <template #icon>
+                      <component :is="menuIconMap[child.path]" />
+                    </template>
+                    {{ child.title }}
+                  </a-menu-item>
+                </a-sub-menu>
+                <a-menu-item v-else :key="item.path">
+                  <template #icon>
+                    <component :is="menuIconMap[item.path]" />
+                  </template>
+                  {{ item.title }}
+                </a-menu-item>
+              </template>
+            </a-menu>
           </div>
         </a-layout-sider>
         <a-layout>
@@ -295,11 +293,9 @@ export default {
           <a-layout-footer>
             <div class="footer">
               <div>
-                <label v-if="info.configProfiles.personalRemote.showLabel !== false">当前配置：</label>
+                <label>当前配置：</label>
                 <!-- 后端api里，id的回退值是''而version的回退值是0（因为version始终应该是一个Number），所以为了不显示一个零蛋，version在前端需要再做个回退为'' -->
                 <code>{{ info.configProfiles.internal.id }}{{ info.configProfiles.internal.id ? ':' : '-' }}{{ info.configProfiles.internal.version || '' }}</code>
-                <code class="ml5">{{ info.configProfiles.sharedRemote.id }}{{ info.configProfiles.sharedRemote.id ? ':' : '-' }}{{ info.configProfiles.sharedRemote.version || '' }}</code>
-                <code class="ml5">{{ info.configProfiles.personalRemote.id }}{{ info.configProfiles.personalRemote.id ? ':' : '-' }}{{ info.configProfiles.personalRemote.version || '' }}</code>
               </div>
 
               <div class="mt5">
@@ -307,6 +303,8 @@ export default {
                 <a @click="openExternal('https://github.com/greper')">Greper</a>,
                 <a @click="openExternal('https://github.com/wangliang181230')">WangLiang</a>,
                 <a @click="openExternal('https://github.com/cute-omega')">CuteOmega</a>
+                <span class="ml5">· 本分支（DevSidecar-Lite）由
+                  <a @click="openExternal('https://github.com/Zerin-emm')">Zerin-emm</a> 维护</span>
                 <span class="ml5">{{ info.version }}</span>
                 <span v-if="isPreRelease" class="pre-release-tag">非正式版</span>
               </div>
@@ -318,106 +316,3 @@ export default {
   </a-config-provider>
 </template>
 
-<style lang="scss">
-body {
-  height: 100%;
-}
-.ds_layout {
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  color: #2c3e50;
-  height: 100%;
-  .ant-layout-has-sider {
-    border: 1px solid #eee;
-  }
-  .ant-layout-sider {
-    flex: 0 0 200px;
-    max-width: 200px;
-    min-width: 200px;
-    width: 200px;
-  }
-  .ant-layout-sider-children {
-    border-right: 1px solid #eee;
-  }
-  > .ant-layout {
-    height: 100%;
-  }
-  > .ant-layout > .ant-layout {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .ant-layout-content {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .content-inner {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: auto;
-  }
-  .logo {
-    padding: 5px;
-    border-bottom: #eee solid 1px;
-    height: 60px;
-    background-image: url('../../public/logo/logo-lang.svg');
-    background-size: auto 50px;
-    background-repeat: no-repeat;
-    background-position: 5px center;
-  }
-  .ant-layout-footer {
-    padding: 10px;
-    text-align: center;
-    border-top: #d6d4d4 solid 1px;
-    flex: 0 0 auto;
-    background: #fff;
-    position: relative;
-    z-index: 1;
-  }
-  .ant-menu-inline,
-  .ant-menu-vertical,
-  .ant-menu-vertical-left {
-    border: 0;
-  }
-
-  .pre-release-banner {
-    margin: 0 12px 12px;
-    padding: 10px 12px;
-    border: 1px solid #ffa940;
-    background: #fff7e6;
-    color: #ad4e00;
-    font-weight: 600;
-    border-radius: 6px;
-    text-align: center;
-  }
-
-  .pre-release-tag {
-    display: inline-block;
-    margin-left: 8px;
-    padding: 1px 8px;
-    border-radius: 999px;
-    border: 1px solid #ffa940;
-    background: #fff7e6;
-    color: #ad4e00;
-    font-size: 12px;
-    line-height: 20px;
-  }
-
-  .search-bar {
-    padding: 12px;
-    border-bottom: 1px solid #eee;
-    background: #fff;
-  }
-}
-.search-bar-highlight {
-  background-color: #ef0fff;
-  color: #fdfdfd;
-
-  &.selected-highlight {
-    background-color: #17a450;
-  }
-}
-</style>

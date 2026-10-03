@@ -1,7 +1,6 @@
 const fs = require('node:fs')
 const jsonApi = require('@docmirror/mitmproxy/src/json')
 const lodash = require('lodash')
-const request = require('request')
 const defConfig = require('./config/index.js')
 const mergeApi = require('./merge.js')
 const Shell = require('./shell')
@@ -14,128 +13,7 @@ function get () {
   return configTarget
 }
 
-let timer
 const configApi = {
-  async startAutoDownloadRemoteConfig () {
-    if (timer != null) {
-      clearInterval(timer)
-    }
-    const download = async () => {
-      try {
-        await configApi.downloadRemoteConfig()
-        configApi.reload()
-      } catch (e) {
-        log.error('定时下载远程配置并重载配置失败', e)
-      }
-    }
-    await download()
-    timer = setInterval(download, 24 * 60 * 60 * 1000) // 1天
-  },
-  async downloadRemoteConfig () {
-    if (get().app.remoteConfig.enabled !== true) {
-      // 删除保存的远程配置文件
-      configApi.deleteRemoteConfigFile()
-      configApi.deleteRemoteConfigFile('_personal')
-      return
-    }
-
-    const remoteConfig = get().app.remoteConfig
-    await configApi.doDownloadRemoteConfig(remoteConfig.url)
-    await configApi.doDownloadRemoteConfig(remoteConfig.personalUrl, '_personal')
-  },
-  doDownloadRemoteConfig (remoteConfigUrl, suffix = '') {
-    if (!remoteConfigUrl) {
-      // 删除保存的远程配置文件
-      configApi.deleteRemoteConfigFile(suffix)
-      return
-    }
-
-    return new Promise((resolve, reject) => {
-      log.info('开始下载远程配置:', remoteConfigUrl)
-
-      const headers = {
-        'Cache-Control': 'no-cache', // 禁止使用缓存
-        'Pragma': 'no-cache', // 禁止使用缓存
-      }
-      if (remoteConfigUrl.startsWith('https://raw.githubusercontent.com/')) {
-        headers['Server-Name'] = 'baidu.com'
-      }
-      request(remoteConfigUrl, { headers }, (error, response, body) => {
-        if (error) {
-          log.error(`下载远程配置失败: ${remoteConfigUrl}, error:`, error, ', response:', response, ', body:', body)
-          reject(error)
-          return
-        }
-        if (response && response.statusCode === 200) {
-          if (body == null || body.length < 2) {
-            log.warn('下载远程配置成功，但内容为空:', remoteConfigUrl)
-            resolve()
-            return
-          } else {
-            log.info('下载远程配置成功:', remoteConfigUrl)
-          }
-
-          // 尝试解析远程配置，如果解析失败，则不保存它
-          let remoteConfig
-          try {
-            remoteConfig = jsonApi.parse(body)
-          } catch {
-            log.error(`远程配置内容格式不正确, url: ${remoteConfigUrl}, body: ${body}`)
-            remoteConfig = null
-          }
-
-          if (remoteConfig != null) {
-            const remoteSavePath = configLoader.getRemoteConfigPath(suffix)
-            try {
-              fs.writeFileSync(remoteSavePath, body)
-              log.info('保存远程配置文件成功:', remoteSavePath)
-            } catch (e) {
-              log.error('保存远程配置文件失败:', remoteSavePath, ', error:', e)
-              reject(new Error(`保存远程配置文件失败: ${e.message}`))
-              return
-            }
-          } else {
-            log.warn('远程配置对象为空:', remoteConfigUrl)
-          }
-
-          resolve()
-        } else {
-          log.error(`下载远程配置失败: ${remoteConfigUrl}, response:`, response, ', body:', body)
-
-          let message
-          if (response) {
-            message = `下载远程配置失败: ${remoteConfigUrl}, message: ${response.statusMessage}, code: ${response.statusCode}`
-          } else {
-            message = `下载远程配置失败: response: ${response}`
-          }
-          reject(new Error(message))
-        }
-      })
-    })
-  },
-  deleteRemoteConfigFile (suffix = '') {
-    const remoteSavePath = configLoader.getRemoteConfigPath(suffix)
-    if (fs.existsSync(remoteSavePath)) {
-      fs.unlinkSync(remoteSavePath)
-      log.info('删除远程配置文件成功:', remoteSavePath)
-    }
-  },
-  readRemoteConfigStr (suffix = '') {
-    try {
-      const path = configLoader.getRemoteConfigPath(suffix)
-      if (fs.existsSync(path)) {
-        const file = fs.readFileSync(path)
-        log.info('读取远程配置文件内容成功:', path)
-        return file.toString()
-      } else {
-        log.info('远程配置文件不存在:', path)
-      }
-    } catch (e) {
-      log.error('读取远程配置文件内容失败:', e)
-    }
-
-    return '{}'
-  },
   /**
    * 保存自定义的 config
    * @param newConfig
@@ -144,17 +22,7 @@ const configApi = {
     // 对比默认config的异同
     const defConfig = configApi.cloneDefault()
 
-    // 如果开启了远程配置，则读取远程配置，合并到默认配置中
-    if (get().app.remoteConfig.enabled === true) {
-      if (get().app.remoteConfig.url) {
-        mergeApi.doMerge(defConfig, configLoader.getRemoteConfig())
-      }
-      if (get().app.remoteConfig.personalUrl) {
-        mergeApi.doMerge(defConfig, configLoader.getRemoteConfig('_personal'))
-      }
-    }
-
-    // 计算新配置与默认配置（启用远程配置时，含远程配置）的差异
+    // 计算新配置与默认配置的差异
     const diffConfig = mergeApi.doDiff(defConfig, newConfig)
 
     // 将差异作为用户配置保存到 config.json 中
@@ -200,6 +68,12 @@ const configApi = {
     const config = configLoader.getConfigFromFiles(newConfig, defConfig)
     configTarget = config
     return config
+  },
+  /**
+   * 获取用户配置文件（config.json）的绝对路径
+   */
+  getUserConfigPath () {
+    return configLoader.getUserConfigPath()
   },
   cloneDefault () {
     return lodash.cloneDeep(defConfig)

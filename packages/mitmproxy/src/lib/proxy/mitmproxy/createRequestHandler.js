@@ -6,28 +6,61 @@ const RequestCounter = require('../../choice/RequestCounter')
 const commonUtil = require('../common/util')
 // const upgradeHeader = /(^|,)\s*upgrade\s*($|,)/i
 const DnsUtil = require('../../dns')
+const { reportIPv6Error } = require('../../dns/base')
 const compatible = require('../compatible/compatible')
 const InsertScriptMiddleware = require('../middleware/InsertScriptMiddleware')
 const dnsLookup = require('./dnsLookup')
+const speedTest = require('../../speed')
 
 const MAX_SLOW_TIME = 8000 // 超过此时间 则认为太慢了
 const WWW_AUTH_HEADER_RE = /^www-authenticate$/i
+
+// 失败重试：只对「幂等且无请求体」的方法重试一次
+// 连接池里的死连接（keep-alive 竞态）和被 RST 的 IP 都能被这一层兜住，避免直接给用户报错误页
+const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const RETRYABLE_ERROR_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_DESTROYED'])
+const MAX_RETRY_COUNT = 1
+
+// 可以把失败归因到「这个远端 IP 有问题」的错误码，用于把坏 IP 从存活列表里剔除
+// 注意：不要把 ERR_STREAM_DESTROYED 放进来，那是我们自己 destroy() 产生的
+const IP_ERROR_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'])
+
+// 取本次真正连上的远端 IP：连接池复用的 socket 不会再走 DNS lookup，
+// isDnsIntercept 里没有 IP，只能从 socket 上拿。remoteAddress 可能是 ::ffff:x.x.x.x 形式
+function getRemoteIp (proxyReq) {
+  const socket = proxyReq && proxyReq.socket
+  const ip = socket && socket.remoteAddress
+  if (!ip) {
+    return null
+  }
+  return ip.startsWith('::ffff:') ? ip.substring(7) : ip
+}
+
+// 按本次请求的 host/port 找到对应的测速器（与 dnsLookup 用的是同一个实例，key 一致）
+function getTesterForRequest (rOptions) {
+  const hostname = rOptions.host || rOptions.hostname
+  if (!hostname || typeof hostname !== 'string') {
+    return null
+  }
+  return speedTest.getSpeedTester(hostname, rOptions.port)
+}
 
 // create requestHandler function
 module.exports = function createRequestHandler (createIntercepts, middlewares, externalProxy, dnsConfig, setting, compatibleConfig) {
   // return
   return function requestHandler (req, res, ssl) {
     let proxyReq
+    let clientAborted = false // 客户端已断开/取消：重试没有任何意义
 
     const rOptions = commonUtil.getOptionsFromRequest(req, ssl, externalProxy, setting, compatibleConfig)
     let url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`
 
     if (rOptions.headers.connection === 'close') {
-      req.socket.setKeepAlive(false)
+      req.socket && req.socket.setKeepAlive(false)
     } else if (rOptions.customSocketId != null) { // for NTLM
-      req.socket.setKeepAlive(true, 60 * 60 * 1000)
+      req.socket && req.socket.setKeepAlive(true, 60 * 60 * 1000)
     } else {
-      req.socket.setKeepAlive(true, 30000)
+      req.socket && req.socket.setKeepAlive(true, 30000)
     }
     const context = {
       rOptions,
@@ -94,6 +127,26 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
       }
     }
 
+    // 判断本次失败能否安全重试：只重试幂等、无请求体、响应尚未开始的请求
+    function canRetryRequest (e) {
+      if (clientAborted || res.headersSent || res.writableEnded) {
+        return false
+      }
+      if (!RETRYABLE_METHODS.has((rOptions.method || 'GET').toUpperCase())) {
+        return false
+      }
+      // 请求体必须已完整收完：否则数据已经发给了那条坏连接，重试会丢 body
+      if (!req.complete) {
+        return false
+      }
+      if (e && e.code && RETRYABLE_ERROR_CODES.has(e.code)) {
+        return true
+      }
+      // 7 秒连接超时 / 请求空闲超时：换一个 IP 再试一次
+      const msg = e && e.message
+      return typeof msg === 'string' && (msg.startsWith('连接超时') || msg.startsWith('代理请求超时'))
+    }
+
     const proxyRequestPromise = async () => {
       rOptions.host = rOptions.hostname || rOptions.host || 'localhost'
       return new Promise((resolve, reject) => {
@@ -131,7 +184,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
                 rOptions.family = 6
               }
               log.debug(`域名 ${rOptions.hostname} DNS: ${dnsAndFamily.dns.dnsName}, family: ${rOptions.family || 4}`)
-              res.setHeader('DS-DNS', dnsAndFamily.dns.dnsName)
+              res.setHeader('DS-DNS', dnsAndFamily.dns.dnsName === '预设IP' ? 'PreSet' : dnsAndFamily.dns.dnsName.replace(/[^\x20-\x7E]/g, ''))
             } else {
               log.info(`域名 ${rOptions.hostname} 在DNS中未配置`)
             }
@@ -139,13 +192,6 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             log.info(`域名 ${rOptions.hostname} DNS配置不存在`)
           }
 
-          // rOptions.sigalgs = 'RSA-PSS+SHA256:RSA-PSS+SHA512:ECDSA+SHA256'
-          // rOptions.agent.options.sigalgs = rOptions.sigalgs
-          // rOptions.ciphers = 'TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA256:ECDHE-RSA-AES256-SHA256:HIGH'
-          // rOptions.agent.options.ciphers = rOptions.ciphers
-          // log.debug('rOptions:', rOptions.hostname + rOptions.path, '\r\n', rOptions)
-          // log.debug('agent:', rOptions.agent)
-          // log.debug('agent.options:', rOptions.agent.options)
           res.setHeader('DS-Proxy-Request', `${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`)
 
           // 自动兼容程序：2
@@ -168,6 +214,11 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             } else {
               log.info(`请求返回: 【${proxyRes.statusCode}】${url}, cost: ${cost} ms`)
             }
+
+            // 按需探测反馈：IP 连接成功
+            if (isDnsIntercept && isDnsIntercept.tester) {
+              isDnsIntercept.tester.reportProbeResult(isDnsIntercept.ip, true)
+            }
             // log.info('request:', proxyReq, proxyReq.socket)
 
             if (cost > MAX_SLOW_TIME) {
@@ -178,7 +229,41 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           })
 
           // 代理请求的事件监听
+          // 连接超时定时器：OS 级 TCP 超时 15-21 秒太慢，7 秒内未建立连接则判定 IP 不通
+          let connectionTimer = setTimeout(() => {
+            if (isDnsIntercept && isDnsIntercept.tester && isDnsIntercept.ip) {
+              isDnsIntercept.tester.reportProbeResult(isDnsIntercept.ip, false)
+            }
+            const cost = Date.now() - start
+            const errorMsg = `连接超时: ${url}, cost: ${cost} ms`
+            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
+            countSlow(isDnsIntercept, `连接超时, cost: ${cost} ms`)
+            proxyReq.destroy(new Error(errorMsg))
+          }, 7000)
+          proxyReq.once('socket', (socket) => {
+            // 关键修复：从连接池复用的 keep-alive socket 已经是 connected 状态，
+            // 永远不会再触发 'connect' 事件；若不在这里清掉定时器，它会在请求开始约 7 秒后
+            // 无差别 destroy() 掉这条健康连接（日志里表现为请求已成功返回后又出现 连接超时）
+            if (!socket.connecting) {
+              clearTimeout(connectionTimer)
+              connectionTimer = null
+              return
+            }
+            socket.once('connect', () => {
+              clearTimeout(connectionTimer)
+              connectionTimer = null
+            })
+          })
+          proxyReq.once('response', () => {
+            // 收到响应说明连接早已建立，同样要清掉连接超时定时器
+            if (connectionTimer) {
+              clearTimeout(connectionTimer)
+              connectionTimer = null
+            }
+          })
+
           proxyReq.on('timeout', () => {
+            if (connectionTimer) { clearTimeout(connectionTimer); connectionTimer = null }
             const cost = Date.now() - start
             const errorMsg = `代理请求超时: ${url}, cost: ${cost} ms`
             log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
@@ -186,13 +271,31 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             proxyReq.end()
             proxyReq.destroy()
             const error = new Error(errorMsg)
+            error.code = 'ETIMEOUT'
             error.status = 408
             reject(error)
           })
           proxyReq.on('error', (e) => {
+            if (connectionTimer) { clearTimeout(connectionTimer); connectionTimer = null }
+            // 上报失败 IP：优先用 DNS lookup 记下的 IP；连接池复用的 socket 没有走 lookup，
+            // 就用 socket.remoteAddress 兜底，否则坏 IP 永远不会被剔除、后续请求会一直复用它。
+            // 客户端主动取消（clientAborted）不能算成 IP 的问题。
+            let failedIp = isDnsIntercept && isDnsIntercept.ip
+            if (!failedIp && !clientAborted && e && IP_ERROR_CODES.has(e.code)) {
+              failedIp = getRemoteIp(proxyReq)
+            }
+            if (failedIp) {
+              const tester = (isDnsIntercept && isDnsIntercept.tester) || getTesterForRequest(rOptions)
+              if (tester) {
+                tester.reportProbeResult(failedIp, false)
+              }
+            }
             const cost = Date.now() - start
             log.error(`代理请求错误: ${url}, cost: ${cost} ms, error:`, e, ', rOptions:', jsonApi.stringify2(rOptions))
             countSlow(isDnsIntercept, `代理请求错误: ${e.message}`)
+            if (e.code === 'ENETUNREACH' && isDnsIntercept && isDnsIntercept.ip) {
+              reportIPv6Error(isDnsIntercept.ip)
+            }
             reject(e)
 
             // 自动兼容程序：2
@@ -215,8 +318,17 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             reject(new Error(errorMsg))
           })
 
+          // 设置代理请求超时（避免请求无限挂起）
+          // agent.options.timeout 是连接池空闲超时（20s），不适合直接用作请求超时。
+          // request timeout 是 socket 空闲超时：socket 上多久无数据即判定超时。
+          // 部分站点响应慢（如 Google Cloud），默认 60 秒，最小 10 秒。
+          const agentTimeout = (rOptions.agent && rOptions.agent.options && rOptions.agent.options.timeout) || 30000
+          const reqTimeout = Math.max(agentTimeout * 2, 10000)
+          proxyReq.setTimeout(reqTimeout)
+
           // 原始请求的事件监听
           req.on('aborted', () => {
+            clientAborted = true
             const cost = Date.now() - start
             const errorMsg = `请求被取消: ${url}, cost: ${cost} ms`
             log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
@@ -227,11 +339,13 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             reject(new Error(errorMsg))
           })
           req.on('error', (e) => {
+            clientAborted = true
             const cost = Date.now() - start
             log.error(`请求错误: ${url}, cost: ${cost} ms, error:`, e, ', rOptions:', jsonApi.stringify2(rOptions))
             reject(e)
           })
           req.on('timeout', () => {
+            clientAborted = true
             const cost = Date.now() - start
             const errorMsg = `请求超时: ${url}, cost: ${cost} ms`
             log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
@@ -251,7 +365,24 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
         return false
       }
 
-      const proxyRes = await proxyRequestPromise()
+      let proxyRes
+      let retryCount = 0
+      for (;;) {
+        try {
+          proxyRes = await proxyRequestPromise()
+          break
+        } catch (e) {
+          if (retryCount >= MAX_RETRY_COUNT || !canRetryRequest(e)) {
+            throw e
+          }
+          retryCount++
+          log.warn(`代理请求失败，换 IP 重试(第 ${retryCount} 次): ${url}, error: ${e && e.message}`)
+          if (!res.headersSent) {
+            res.removeHeader('DS-DNS-Lookup') // 清掉上一次尝试留下的旧 IP 调试头
+          }
+          await new Promise((resolve) => setTimeout(resolve, 30))
+        }
+      }
 
       // proxyRes.on('data', (chunk) => {
       //   // log.info('BODY: ')
@@ -311,6 +442,8 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
       await responseInterceptorPromise
 
       if (!res.headersSent) { // prevent duplicate set headers
+        // HTTP/2 禁止头，上游服务器可能返回，直传会导致 http2 模块抛异常
+        const HTTP2_FORBIDDEN = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'http2-settings'])
         Object.keys(proxyRes.headers).forEach((key) => {
           if (proxyRes.headers[key] !== undefined) {
             // https://github.com/nodejitsu/node-http-proxy/issues/362
@@ -319,6 +452,9 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
                 proxyRes.headers[key] = proxyRes.headers[key] && proxyRes.headers[key].split(',')
               }
               key = 'www-authenticate'
+            }
+            if (HTTP2_FORBIDDEN.has(key)) {
+              return
             }
             res.setHeader(key, proxyRes.headers[key])
           }
@@ -341,6 +477,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           if (rOptions.headers.origin) {
             headers['Access-Control-Allow-Credentials'] = 'true'
             headers['Access-Control-Allow-Origin'] = rOptions.headers.origin
+            headers['Vary'] = 'Origin'
           }
 
           res.writeHead(status, headers)
@@ -352,7 +489,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             }
           </style>
           <p>DevSidecar Error:</p>
-          <p>目标网站请求错误：【${e.code}】 ${e.message}</p>
+          <p>目标网站请求错误：【${e.code || (e.status || 'UNKNOWN')}】 ${e.message}</p>
           <p>目标地址：${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}</p>`,
           )
         } catch {

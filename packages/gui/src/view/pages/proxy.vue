@@ -14,6 +14,10 @@ export default defineComponent({
       key: 'proxy',
       loopbackVisible: false,
       excludeIpList: [],
+      // 内置默认排除项有 100+ 条，每行都要渲染输入框+下拉框，一次性全渲染会阻塞渲染进程近 1 秒。
+      // 因此默认只渲染前 N 条，需要编辑全部时再手动展开（展开时会一次性渲染，属用户主动操作）。
+      excludeIpListPreviewCount: 10,
+      excludeIpListExpanded: false,
       excludeIpOptions: [
         {
           label: '排除',
@@ -25,6 +29,17 @@ export default defineComponent({
         },
       ],
     }
+  },
+
+  computed: {
+    // 默认只渲染前 N 条，展开后才渲染全部：内置默认排除项有 100+ 条（每行输入框+下拉框），
+    // 一次性渲染会阻塞渲染进程近 1 秒，导致刚切到本页时「卡一下」。
+    visibleExcludeIpList () {
+      return this.excludeIpListExpanded ? this.excludeIpList : this.excludeIpList.slice(0, this.excludeIpListPreviewCount)
+    },
+    hiddenExcludeIpCount () {
+      return Math.max(0, this.excludeIpList.length - this.excludeIpListPreviewCount)
+    },
   },
 
   async created () {
@@ -57,21 +72,26 @@ export default defineComponent({
       return this.config.proxy
     },
     initExcludeIpList () {
-      this.excludeIpList = []
+      const list = []
       for (const key in this.config.proxy.excludeIpList) {
         const value = this.config.proxy.excludeIpList[key]
-        this.excludeIpList.push({
+        list.push({
           key: key || '',
           value: value === true ? 'true' : 'false',
         })
       }
+      this.excludeIpList = list
     },
     addExcludeIp () {
       this.excludeIpList.unshift({ key: '', value: 'true' })
+      if (!this.excludeIpListExpanded) {
+        this.excludeIpListExpanded = true
+      }
       this.focusFirst(this.$refs.excludeIpList)
     },
     delExcludeIp (item, index) {
       this.excludeIpList.splice(index, 1)
+      // 删除的是已渲染区间内的行时，若原本是折叠状态则保持折叠，无需额外处理
     },
     submitExcludeIpList () {
       const excludeIpList = {}
@@ -123,11 +143,20 @@ export default defineComponent({
       <!-- 以下两个功能仅windows支持，mac和linux暂不支持 -->
       <a-form-item v-if="isWindows()" label="设置环境变量" :label-col="labelCol" :wrapper-col="wrapperCol">
         <a-checkbox v-model:checked="config.proxy.setEnv">
-          是否同时修改<code>HTTPS_PROXY</code>环境变量（不好用，不建议勾选）
+          是否同时修改<code>HTTPS_PROXY</code>环境变量
         </a-checkbox>
         <div class="form-help">
           当发现某些应用并没有走加速通道或加速报错时，可尝试勾选此选项，并重新开启系统代理开关<br>
           注意：当前已打开的命令行并不会实时生效，需要重新打开一个新的命令行窗口
+        </div>
+      </a-form-item>
+      <a-form-item v-if="isWindows()" label="设置CA证书路径" :label-col="labelCol" :wrapper-col="wrapperCol">
+        <a-checkbox v-model:checked="config.proxy.setCaBundle" :disabled="!config.proxy.setEnv">
+          是否同时设置<code>REQUEST_CA_BUNDLE</code>环境变量
+        </a-checkbox>
+        <div class="form-help">
+          设置为DS的CA证书路径，解决 Python/QT 等程序因不信任自签 CA 证书而报错的问题<br>
+          注意：必须先勾选上面"设置环境变量"才可启用此选项
         </div>
       </a-form-item>
       <a-form-item v-if="isWindows()" label="设置Loopback" :label-col="labelCol" :wrapper-col="wrapperCol">
@@ -173,7 +202,7 @@ export default defineComponent({
             <a-button type="primary" @click="addExcludeIp()"><PlusOutlined /></a-button>
           </a-col>
         </a-row>
-        <a-row v-for="(item, index) of excludeIpList" ref="excludeIpList" :key="index" :gutter="10" class="fine-tuning">
+        <a-row v-for="(item, index) of visibleExcludeIpList" ref="excludeIpList" :key="index" :gutter="10" class="fine-tuning">
           <a-col :span="17">
             <a-input v-model:value="item.key" class="mt-1" spellcheck="false" />
           </a-col>
@@ -186,6 +215,13 @@ export default defineComponent({
           </a-col>
           <a-col :span="2">
             <a-button type="danger" @click="delExcludeIp(item, index)"><MinusOutlined /></a-button>
+          </a-col>
+        </a-row>
+        <a-row v-if="hiddenExcludeIpCount > 0 || excludeIpListExpanded" :gutter="10">
+          <a-col :span="24">
+            <a-button type="link" class="pl0" @click="excludeIpListExpanded = !excludeIpListExpanded">
+              {{ excludeIpListExpanded ? '收起' : `显示全部（共 ${excludeIpList.length} 条）` }}
+            </a-button>
           </a-col>
         </a-row>
       </a-form-item>
@@ -219,7 +255,7 @@ export default defineComponent({
       <div>
         <div>1、此设置用于解决OneNote、MicrosoftStore、Outlook等UWP应用无法访问网络的问题。</div>
         <div>2、点击右上方按钮，打开EnableLoopback，然后按下图所示操作即可</div>
-        <img style="margin-top:20px;border:1px solid #eee" width="80%" src="loopback.png">
+        <img style="margin-top:20px;border:1px solid var(--border-color)" width="80%" src="loopback.png">
       </div>
     </a-drawer>
   </ds-container>

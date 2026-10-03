@@ -24,8 +24,6 @@ try {
 }
 // const scriptDir = '../../gui/extra/scripts/'
 // config.setting.script.defaultDir = path.join(__dirname, scriptDir)
-// const pacFilePath = '../../gui/extra/pac/pac.txt'
-// config.plugin.overwall.pac.customPacFilePath = path.join(__dirname, pacFilePath)
 config.setting.rootDir = path.join(__dirname, '../../gui/')
 log.info(`start mitmproxy by cli, configPath: ${configPath}`)
 server.start(config)

@@ -7,8 +7,8 @@ import App from './view/App.vue'
 import DsContainer from './view/components/container'
 import routes from './view/router'
 import 'ant-design-vue/dist/reset.css'
+import './view/style/theme/variables.scss'
 import './view/style/index.scss'
-import './view/style/theme/dark.scss' // 暗色主题
 
 try {
   window.onerror = (message, source, lineno, colno, error) => {
@@ -38,8 +38,10 @@ try {
     // 初始化status
     try {
       await view.initPre(app, api)
-      app.mount('#app')
+      // 先安装模块（update 等），再挂载 app，
+      // 避免组件 mounted 时 $api.update 尚未初始化导致崩溃
       view.initModules(app, router)
+      app.mount('#app')
     } catch (e) {
       console.error('view初始化出现未知异常：', e)
       ipcRenderer.send('view初始化出现未知异常：', e)

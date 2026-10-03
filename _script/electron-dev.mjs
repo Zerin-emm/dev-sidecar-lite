@@ -14,9 +14,15 @@ const state = {
 }
 
 function spawnCommand (entry, args = [], extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv }
+  // 某些宿主/工具会注入 ELECTRON_RUN_AS_NODE=1，那会让 electron.exe 退化成纯 Node 进程：
+  // electron 模块被解析成 npm 包（只有 dist 路径字符串），主进程报
+  // "SyntaxError: The requested module 'electron' does not provide an export named 'app'"。
+  // 这里为子进程清掉该变量，保证以真正的 Electron 主进程启动。
+  delete env.ELECTRON_RUN_AS_NODE
   return spawn(entry, args, {
     cwd: guiDir,
-    env: { ...process.env, ...extraEnv },
+    env,
     shell: false,
     stdio: 'inherit',
     windowsHide: false,
@@ -95,7 +101,13 @@ async function main () {
 
   try {
     await waitForServer(devServerUrl, state.devServer)
-    state.electron = spawnCommand(electronBin, ['.'], {
+    // 需要检查渲染进程时（例如量页面首帧耗时），设 DS_DEBUG_PORT=9222 再启动：
+    // 之后可以访问 http://127.0.0.1:9222/json 拿到页面，用 DevTools 协议执行脚本。
+    const electronArgs = ['.']
+    if (process.env.DS_DEBUG_PORT) {
+      electronArgs.push(`--remote-debugging-port=${process.env.DS_DEBUG_PORT}`)
+    }
+    state.electron = spawnCommand(electronBin, electronArgs, {
       WEBPACK_DEV_SERVER_URL: devServerUrl,
     })
     state.electron.on('exit', (code, signal) => {

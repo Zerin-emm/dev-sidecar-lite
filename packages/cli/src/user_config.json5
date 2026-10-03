@@ -13,16 +13,6 @@
     },
     "git": {
       "enabled": true
-    },
-    "overwall": {
-      "enabled": false,
-      "targets": {
-        "*gagedigital.com": true,
-        "*yonsz.net": true,
-        "*bootstrapcdn.com": true,
-        "*cloudflare.com": true,
-        "help.yonsz.net": true
-      }
     }
   },
   "server": {

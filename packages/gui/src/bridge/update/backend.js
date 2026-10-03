@@ -1,26 +1,84 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import DevSidecar from '@docmirror/dev-sidecar'
-import AdmZip from 'adm-zip'
 import { ipcMain } from 'electron'
-import electronUpdater from 'electron-updater'
-const { autoUpdater } = electronUpdater
 import request from 'request'
-import progress from 'request-progress'
+import fs from 'node:fs'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const pkg = require('../../../package.json')
-import appPathUtil from '../../utils/util.apppath.js'
 import log from '../../utils/util.log.gui.js'
 import { isNewVersion } from '@docmirror/dev-sidecar/src/utils/util.version.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const isMac = process.platform === 'darwin'
-const isLinux = process.platform === 'linux'
-
 const curVersion = pkg.version
 const isCurrentPreRelease = curVersion.includes('-')
+
+// 本 fork 的发布地址。
+// 更新只做「检查有没有新版本 + 引导去 Releases 页面手动下载安装包」：
+// 不再使用 electron-updater（上游早就注释掉了 autoUpdater.checkForUpdates），
+// 也不再下载增量 zip（releases 里本来就没有 update-<platform>-<arch>-*.zip 资产，
+// partPackage 恒为空，那段解压代码从未被执行过）。
+const releasesPageUrl = 'https://github.com/Zerin-emm/dev-sidecar-lite/releases'
+
+// 检查更新只用 releases.atom，不用 api.github.com：
+// 未认证的 GitHub API 配额只有 60 次/小时，而且按出口 IP 共享，配额用完直接 403
+// （实测本机直连 api.github.com 就是 403）。releases.atom 由 github.com 自己提供，
+// 不受 API 配额限制，本机实测可用，所以直接以它为准。
+const releasesAtomUrl = 'https://github.com/Zerin-emm/dev-sidecar-lite/releases.atom'
+
+/**
+ * 组装 releases.atom 的请求参数。
+ *
+ * 两个坑（都实测过，别改）：
+ *
+ * 1、必须走本地代理，而且必须显式带 `Connection: keep-alive`。
+ *    本机直连 github.com 是 ETIMEDOUT（这正是本应用存在的意义），所以更新请求要发给
+ *    本地代理。而 DS 在 `packages/mitmproxy/src/lib/proxy/common/util.js:145-152` 里，
+ *    一旦看到客户端发 `Connection: close` 就把 agent 置为 false；随后 sni 拦截器
+ *    （`packages/mitmproxy/src/lib/interceptor/impl/req/sni.js:10`）虽然把 servername 改成了
+ *    baidu.com，却因为没有 agent.unVerifySslAgent 可用，无法关掉上游证书校验，
+ *    于是上游拿着 github.com 的证书去和 baidu.com 比对，报
+ *    `ERR_TLS_CERT_ALTNAME_INVALID`，代理直接回 500 错误页。
+ *    （node 的 request 库默认发 Connection: close，curl 默认 keep-alive，
+ *     所以同一时刻 curl 能通、本应用却拿到 500。）显式 keep-alive 后实测 200。
+ *
+ * 2、客户端必须信任 DS 的根证书（ca 选项），否则报
+ *    `unable to verify the first certificate` —— node 不读 Windows 证书库。
+ */
+function buildRequestOptions () {
+  const config = DevSidecar.api.config.get()
+  const server = config.server || {}
+  const options = {
+    timeout: 15000,
+    headers: {
+      'User-Agent': `DS/${curVersion}`,
+      Connection: 'keep-alive',
+    },
+  }
+
+  // 代理没开时不带 proxy：直连虽然在本机不通，但用户没开代理时本来就没有网络加速
+  if (server.enabled === false || !server.port) {
+    return options
+  }
+
+  const host = server.host || '127.0.0.1'
+  // 代理同时监听两个端口：httpsPort = server.port，httpPort = server.port - 1
+  // （见 packages/mitmproxy/src/lib/proxy/mitmproxy/index.js:152）
+  options.proxy = `http://${host}:${server.port - 1}`
+
+  const certPath = server.setting && server.setting.rootCaFile && server.setting.rootCaFile.certPath
+  try {
+    if (certPath && fs.existsSync(certPath)) {
+      options.ca = fs.readFileSync(certPath)
+    } else {
+      // 实在拿不到根证书就退化为不校验（本地代理用的是自签证书）
+      options.strictSSL = false
+    }
+  } catch (e) {
+    log.warn('读取根证书失败，本次检查更新不校验证书：', e.message)
+    options.strictSSL = false
+  }
+
+  return options
+}
 
 function extractVersion (versionData) {
   const candidates = [versionData.tag_name, versionData.name]
@@ -36,309 +94,166 @@ function extractVersion (versionData) {
   return null
 }
 
-function downloadFile (uri, filePath, onProgress, onSuccess, onError) {
-  log.info('download url', uri)
-  progress(request(uri), {
-    // throttle: 2000,                    // Throttle the progress event to 2000ms, defaults to 1000ms
-    // delay: 1000,                       // Only start to emit after 1000ms delay, defaults to 0ms
-    // lengthHeader: 'x-transfer-length'  // Length header to use, defaults to content-length
-  })
-    .on('progress', (state) => {
-      onProgress(state.percent * 100)
-      log.log('progress', state.percent)
-    })
-    .on('error', (err) => {
-      // Do something with err
-      log.error('下载升级包失败:', err)
-      onError(err)
-    })
-    .on('end', () => {
-      // Do something after request finishes
-      onSuccess()
-    })
-    .pipe(fs.createWriteStream(filePath))
+function decodeHtml (text) {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, '\'')
+    .replace(/&amp;/g, '&')
 }
 
 /**
- * 检测更新，在你想要检查更新的时候执行，renderer事件触发后的操作自行编写
+ * 解析 releases.atom，按「从新到旧」的顺序返回所有能识别的 release。
+ *
+ * Atom 里没有 assets / prerelease 字段，所以：
+ * - 版本号优先从 <link href=".../releases/tag/<tag>"> 里取 —— release 的标题
+ *   （<title>）是发布者自己填的名字，往往不是版本号（例如标题填 "testupdate"、
+ *   tag 才是 v8.0.0），只认标题会漏掉版本。标题能解析出纯版本号时也接受。
+ * - 是否预发布只能靠版本号里有没有 '-' 判断。
  */
-function updateHandle (app, api, win, beforeQuit, quit, log) {
-  // // 更新前，删除本地安装包 ↓
-  // const updaterCacheDirName = 'dev-sidecar-updater'
-  // const updatePendingPath = path.join(autoUpdater.app.baseCachePath, updaterCacheDirName, 'pending')
-  // fs.emptyDir(updatePendingPath)
-  // // 更新前，删除本地安装包 ↑
-  const message = {
-    error: '更新失败',
-    checking: '检查更新中',
-    updateAva: '发现新版本',
-    updateNotAva: '当前为最新版本，无需更新',
+function parseReleasesFromAtom (body) {
+  const releases = []
+  if (!body) {
+    return releases
   }
-  // 本地开发环境，改变app-update.yml地址
-  if (process.env.NODE_ENV === 'development') {
-    // const publishUrl = process.env.VUE_APP_PUBLISH_URL
-    // autoUpdater.setFeedURL({
-    //   provider: 'generic',
-    //   url: publishUrl
-    // })
-    if (isMac) {
-      autoUpdater.updateConfigPath = path.join(__dirname, 'mac/dev-sidecar.app/Contents/Resources/app-update.yml')
-    } else if (isLinux) {
-      autoUpdater.updateConfigPath = path.join(__dirname, 'linux-unpacked/resources/app-update.yml')
+
+  const entries = body.match(/<entry>[\s\S]*?<\/entry>/g) || []
+  for (const entry of entries) {
+    const linkMatch = entry.match(/<link[^>]*href="([^"]*)"[^>]*\/?>/)
+    let tagFromLink = ''
+    if (linkMatch) {
+      const tagMatch = linkMatch[1].match(/\/releases\/tag\/([^/?#"]+)/)
+      if (tagMatch) {
+        tagFromLink = decodeURIComponent(tagMatch[1])
+      }
+    }
+    const titleMatch = entry.match(/<title>([^<]*)<\/title>/)
+    const title = titleMatch ? decodeHtml(titleMatch[1]).trim() : ''
+
+    const version = extractVersion({ tag_name: tagFromLink, name: title })
+    if (!version) {
+      log.info('跳过无法提取版本号的版本:', title || tagFromLink || '(空)')
+      continue
+    }
+
+    let releaseNotes = ''
+    const contentMatch = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)
+    if (contentMatch) {
+      const text = decodeHtml(contentMatch[1]).replace(/<[^>]*>/g, '').trim()
+      // release 正文为空时 GitHub 会写死 "No content."
+      if (text && text !== 'No content.') {
+        releaseNotes = text
+      }
+    }
+
+    releases.push({ version, releaseNotes: releaseNotes || '无', title })
+  }
+  return releases
+}
+
+/**
+ * 检测更新：查询 releases.atom，发现新版本就通知渲染进程弹窗，
+ * 由用户自己点「前往下载」跳到 Releases 页面下载安装包。
+ */
+function updateHandle (win, log) {
+  function notifyByVersion (onlineVersion, releaseNotes) {
+    const isNew = isNewVersion(onlineVersion, curVersion, log)
+    log.info(`版本比对结果：isNewVersion('${onlineVersion}', '${curVersion}') = ${isNew}`)
+    if (isNew > 0) {
+      log.info(`检查更新：发现新版本 '${onlineVersion}'，当前版本号为 '${curVersion}'`)
+      win.webContents.send('update', {
+        key: 'available',
+        value: {
+          version: onlineVersion,
+          releaseNotes: releaseNotes || '无',
+          releasePageUrl: releasesPageUrl,
+        },
+      })
     } else {
-      autoUpdater.updateConfigPath = path.join(__dirname, 'win-unpacked/resources/app-update.yml')
+      log.info(`检查更新：没有新版本，最近发布的版本号为 '${onlineVersion}'，而当前版本号为 '${curVersion}'`)
+      win.webContents.send('update', { key: 'notAvailable' })
     }
   }
 
-  log.info('auto updater', autoUpdater.getFeedURL())
-  autoUpdater.autoDownload = false
+  function sendError (message) {
+    win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: message })
+  }
 
-  let partPackagePath = null
+  function checkForUpdates () {
+    const options = buildRequestOptions()
+    log.info(`检查更新：GET ${releasesAtomUrl}${options.proxy ? ` , proxy: ${options.proxy}` : ' , 直连'}`)
 
-  // 检查更新
-  const releasesApiUrl = 'https://api.github.com/repos/docmirror/dev-sidecar/releases'
-  async function checkForUpdatesFromGitHub () {
-    request(releasesApiUrl, { headers: { 'User-Agent': `DS/${curVersion}`, 'Server-Name': 'baidu.com' } }, (error, response, body) => {
+    request(releasesAtomUrl, options, (error, response, body) => {
       try {
         if (error) {
           log.error('检查更新失败:', error)
-          const errorMsg = `检查更新失败：${error}`
-          win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: errorMsg })
+          sendError(`检查更新失败：${error}`)
           return
         }
-        if (response && response.statusCode === 200) {
-          if (body == null || body.length < 2) {
-            log.warn('检查更新失败，github API返回数据为空:', body)
-            win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: '检查更新失败，github 返回数据为空' })
-            return
-          }
-
-          // 尝试解析API响应内容
-          let data
-          try {
-            data = JSON.parse(body)
-          } catch {
-            log.error('检查更新失败，github API返回数据格式不正确:', body)
-            win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: '检查更新失败，github API返回数据格式不正确' })
-            return
-          }
-
-          if (typeof data !== 'object' || data.length === undefined) {
-            log.error('检查更新失败，github API返回数据不是数组:', body)
-            win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: '检查更新失败，github API返回数据不是数组' })
-            return
-          }
-
-          log.debug('github api返回的release数据：', JSON.stringify(data, null, '\t'))
-
-          // 检查更新
-          for (let i = 0; i < data.length; i++) {
-            const versionData = data[i]
-
-            // log.debug('版本数据：', versionData)
-
-            if (!versionData.assets || versionData.assets.length === 0) {
-              log.info('跳过空版本，即未上传过安装包：', versionData.name)
-              continue // 跳过空版本，即未上传过安装包
-            }
-            const onlineVersion = extractVersion(versionData)
-            if (!onlineVersion) {
-              log.info('跳过无法提取版本号的版本:', versionData.name || versionData.tag_name)
-              continue // 跳过即 “不是正式，又不是预发布” 的版本
-            }
-
-            const isOnlinePreRelease = onlineVersion.includes('-') || versionData.prerelease
-            if (!isCurrentPreRelease && DevSidecar.api.config.get().app.skipPreRelease && isOnlinePreRelease) {
-              log.info('跳过预发布版本:', versionData.name, ', onlineVersion:', onlineVersion)
-              continue // 跳过预发布版本
-            }
-
-            log.info('最近可用版本：', versionData.name, ', onlineVersion:', onlineVersion)
-
-            // 比对版本号，是否为新版本
-            const isNew = isNewVersion(onlineVersion, curVersion, log)
-            log.info(`版本比对结果：isNewVersion('${onlineVersion}', '${curVersion}') = ${isNew}`)
-            if (isNew > 0) {
-              log.info(`检查更新：发现新版本 '${onlineVersion}'，当前版本号为 '${curVersion}'`)
-              win.webContents.send('update', {
-                key: 'available',
-                value: {
-                  version: onlineVersion,
-                  releaseNotes: versionData.body
-                    ? (versionData.body.replace(/\r\n/g, '\n').replace(/https:\/\/github.com\/docmirror\/dev-sidecar/g, '').replace(/(?<=(^|\n))[ \t]*(?:#[ #]*)?#\s*/g, '') || '无')
-                    : '无',
-                },
-              })
+        if (!response || response.statusCode !== 200) {
+          const status = response && response.statusCode
+          log.error('检查更新失败, status:', status, ', body:', typeof body === 'string' ? body.substring(0, 300) : body)
+          // DS 代理出错时会回一个 HTML 错误页，把里面的错误描述提取出来更友好
+          let detail = ''
+          if (typeof body === 'string') {
+            const errMatch = body.match(/【([^】]+)】/)
+            if (errMatch) {
+              detail = errMatch[1]
             } else {
-              log.info(`检查更新：没有新版本，最近发布的版本号为 '${onlineVersion}'，而当前版本号为 '${curVersion}'`)
-              win.webContents.send('update', { key: 'notAvailable' })
+              const titleMatch = body.match(/<title>([^<]*)<\/title>/i)
+              detail = titleMatch ? titleMatch[1] : body.substring(0, 200)
             }
-
-            return // 只检查最近一个版本
+          } else if (response && response.statusMessage) {
+            detail = response.statusMessage
           }
-
-          log.info('检查更新-没有正式版本数据')
-          win.webContents.send('update', { key: 'notAvailable' })
-        } else {
-          log.error('检查更新失败, status:', response.statusCode, ', body:', body)
-
-          let bodyObj
-          try {
-            bodyObj = JSON.parse(body)
-          } catch {
-            bodyObj = null
-          }
-
-          let message
-          if (response) {
-            message = `检查更新失败: ${bodyObj && bodyObj.message ? bodyObj.message : response.message}, code: ${response.statusCode}`
-          } else {
-            message = `检查更新失败: ${bodyObj && bodyObj.message ? bodyObj.message : body}`
-          }
-          win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: message })
+          sendError(`检查更新失败: ${detail}, code: ${status}`)
+          return
         }
+
+        const releases = parseReleasesFromAtom(body)
+        if (releases.length === 0) {
+          log.info('检查更新-没有正式版本数据，releases.atom 里没有可识别的 release')
+          win.webContents.send('update', { key: 'notAvailable' })
+          return
+        }
+
+        const skipPreRelease = DevSidecar.api.config.get().app.skipPreRelease
+        for (const release of releases) {
+          const isOnlinePreRelease = release.version.includes('-')
+          if (!isCurrentPreRelease && skipPreRelease && isOnlinePreRelease) {
+            log.info('跳过预发布版本:', release.title, ', onlineVersion:', release.version)
+            continue
+          }
+          log.info('最近可用版本：', release.title, ', onlineVersion:', release.version)
+          // 只检查最近一个可用版本
+          notifyByVersion(release.version, release.releaseNotes)
+          return
+        }
+
+        log.info('检查更新-没有正式版本数据')
+        win.webContents.send('update', { key: 'notAvailable' })
       } catch (e) {
         log.error('检查更新失败:', e)
-        win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: `检查更新失败:${e.message}` })
+        sendError(`检查更新失败:${e.message}`)
       }
     })
   }
-
-  // 下载升级包
-  function downloadPart (app, value) {
-    const appPath = appPathUtil.getAppRootPath(app)
-    const fileDir = path.join(appPath, 'update')
-    log.info('download dir:', fileDir)
-    try {
-      fs.accessSync(fileDir, fs.constants.F_OK)
-    } catch {
-      fs.mkdirSync(fileDir)
-    }
-    const filePath = path.join(fileDir, `${value.version}.zip`)
-
-    downloadFile(value.partPackage, filePath, (data) => {
-      win.webContents.send('update', { key: 'progress', value: Number.parseInt(data) })
-    }, () => {
-      // 文件下载完成
-      win.webContents.send('update', { key: 'progress', value: 100 })
-      log.info('升级包下载成功：', filePath)
-      partPackagePath = filePath
-      win.webContents.send('update', {
-        key: 'downloaded',
-        value,
-      })
-    }, (error) => {
-      sendUpdateMessage({ key: 'error', value: error, error })
-    })
-  }
-
-  async function updatePart (app, api, value, partPackagePath) {
-    const appPath = appPathUtil.getAppRootPath(app)
-    const platform = api.shell.getSystemPlatform()
-    let target = path.join(appPath, 'resources')
-    if (platform === 'mac') {
-      target = path.join(appPath, 'Resources')
-    }
-    const length = fs.statSync(partPackagePath)
-    log.info('安装包大小:', length)
-
-    log.info('开始解压缩，安装升级包:', partPackagePath, target)
-
-    try {
-      await beforeQuit()
-      app.relaunch()
-      // 解压缩
-      const zip = new AdmZip(partPackagePath)
-      zip.extractAllTo(target, true)
-      log.info('安装完成，重启app')
-    } finally {
-      app.exit(0)
-    }
-  }
-
-  autoUpdater.on('error', (error) => {
-    log.warn('autoUpdater error:', error)
-    sendUpdateMessage({ key: 'error', value: error, error })
-    // dialog.showErrorBox('Error: ', error == null ? 'unknown' : (error.stack || error).toString())
-  })
-  autoUpdater.on('checking-for-update', () => {
-    log.info('autoUpdater checking-for-update')
-    sendUpdateMessage({ key: 'checking', value: message.checking })
-  })
-  autoUpdater.on('update-available', (info) => {
-    log.info('autoUpdater update-available')
-    sendUpdateMessage({ key: 'available', value: info })
-  })
-  autoUpdater.on('update-not-available', () => {
-    log.info('autoUpdater update-not-available')
-    sendUpdateMessage({ key: 'notAvailable', value: message.updateNotAva })
-  })
-  // 更新下载进度
-  autoUpdater.on('download-progress', (progressObj) => {
-    log.info('autoUpdater download-progress')
-    win.webContents.send('update', { key: 'progress', value: Number.parseInt(progressObj.percent) })
-  })
-  // 更新完成，重启应用
-  autoUpdater.on('update-downloaded', (info) => {
-    log.info('download complete, version:', info.version)
-    win.webContents.send('update', {
-      key: 'downloaded',
-      value: info,
-    })
-  })
 
   ipcMain.on('update', (e, arg) => {
-    if (arg.key === 'doUpdateNow') {
-      if (partPackagePath) {
-        updatePart(app, api, arg.value, partPackagePath)
-        return
-      }
-      // some code here to handle event
-      beforeQuit().then(() => {
-        autoUpdater.quitAndInstall()
-        if (app) {
-          setTimeout(() => {
-            app.exit()
-          }, 1000)
-        }
-      })
-    } else if (arg.key === 'checkForUpdate') {
-      // 执行自动更新检查
-      log.info('autoUpdater checkForUpdates:', arg.fromUser)
-
-      // 调用 github API，获取release数据，来检查更新
-      // autoUpdater.checkForUpdates()
-      checkForUpdatesFromGitHub()
-    } else if (arg.key === 'downloadUpdate') {
-      // 下载新版本
-      log.info('autoUpdater downloadUpdate')
-      autoUpdater.downloadUpdate()
-    } else if (arg.key === 'downloadPart') {
-      // 下载增量更新版本
-      log.info('autoUpdater downloadPart')
-      downloadPart(app, arg.value)
+    if (arg.key === 'checkForUpdate') {
+      // 请求 releases.atom，获取最新版本号，来检查更新
+      log.info('checkForUpdate:', arg.fromUser)
+      checkForUpdates()
     }
   })
-  // 通过main进程发送事件给renderer进程，提示更新信息
-  function sendUpdateMessage (message) {
-    log.info('autoUpdater sendUpdateMessage')
-    win.webContents.send('update', message)
-  }
 
-  log.info('auto update inited')
-  return autoUpdater
+  log.info('check update inited')
 }
 
 export default {
   install (context) {
-    const { app, api, win, beforeQuit, quit, log } = context
-    if (process.env.NODE_ENV === 'development') {
-      Object.defineProperty(app, 'isPackaged', {
-        get () {
-          return true
-        },
-      })
-    }
-    updateHandle(app, api, win, beforeQuit, quit, log)
+    const { win, log } = context
+    updateHandle(win, log)
   },
 }

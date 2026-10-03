@@ -10,7 +10,7 @@ module.exports = defineConfig({
   pages: {
     index: {
       entry: 'src/main.js',
-      title: 'DevSidecar-给开发者的边车辅助工具',
+      title: 'DevSidecar-Lite-给开发者的边车辅助工具',
     },
   },
   lintOnSave: false,
@@ -59,11 +59,11 @@ module.exports = defineConfig({
             to: 'extra',
           },
         ],
-        appId: 'cn.docmirror.DevSidecar',
-        productName: 'dev-sidecar',
+        appId: 'com.github.zerin-emm.dev-sidecar-lite',
+        productName: 'DevSidecar-Lite',
         // eslint-disable-next-line no-template-curly-in-string
-        artifactName: 'DevSidecar-${version}-${arch}.${ext}',
-        copyright: 'Copyright © 2020-' + new Date().getFullYear() + ' Greper, WangLiang, CuteOmega',
+        artifactName: 'DevSidecar-Lite-${version}-${arch}.${ext}',
+        copyright: 'Copyright © 2020-' + new Date().getFullYear() + ' Greper, WangLiang, CuteOmega; fork maintained by Zerin-emm',
         nsis: {
           oneClick: false,
           perMachine: true,
