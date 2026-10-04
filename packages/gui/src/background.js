@@ -621,13 +621,20 @@ try {
         log.error('setTray error:', err)
       }
 
-      _powerMonitor.on('shutdown', async (e) => {
-        if (e) {
-          e.preventDefault()
-        }
-        log.info('系统关机，恢复代理设置')
-        await quit('系统关机')
-      })
+      // 系统关机/重启时恢复代理设置：只有 Windows 能拦下关机流程（powerMonitor.js 里用
+      // @starknt/shutdown-handler-napi 挂 WndProc 钩子）。macOS 走 Electron 原生事件，
+      // 但 macOS 关机时 app 本来就会被正常终止，无需干预；Linux 则该 powerMonitor
+      // 完全不被加载（见上方 isWindows 判断），保留该监听会造成「加载失败日志」变成
+      // 每次关机必现的假报错。所以非 Windows 直接跳过。
+      if (isWindows) {
+        _powerMonitor.on('shutdown', async (e) => {
+          if (e) {
+            e.preventDefault()
+          }
+          log.info('系统关机，恢复代理设置')
+          await quit('系统关机')
+        })
+      }
     })
   }
 

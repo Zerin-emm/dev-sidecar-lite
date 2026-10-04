@@ -1,5 +1,6 @@
 const http = require('node:http')
 const https = require('node:https')
+const tls = require('node:tls')
 const jsonApi = require('../../../json')
 const log = require('../../../utils/util.log.server')
 const RequestCounter = require('../../choice/RequestCounter')
@@ -204,6 +205,25 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           }
 
           res.setHeader('DS-Proxy-Request-Family', rOptions.family || 4)
+
+          // SNI 伪装（例如 github.com ➜ baidu.com）：servername 被改写后，Node 默认会拿改写后的
+          // servername 去校验证书，必然报 ERR_TLS_CERT_ALTNAME_INVALID。历史上为了绕开这个错误，
+          // 直接在 sni.js 里把整条请求的证书校验关掉（rejectUnauthorized=false）——代价是任何受信 CA
+          // 签发的证书都能冒充该域名。这里改为：证书链仍由 rejectUnauthorized 校验，域名匹配改成
+          // 按【真实域名】校验（规则里显式写了 verifyHost 时，按 verifyHost 校验）。
+          // 注意：走 proxy 拦截器时 rOptions.hostname 已被改成代理目标（见 proxy.js 的 doProxy），
+          // 那种情况下 proxy.js 会自行把 agent 换成 unVerifySslAgent，这里的覆盖不参与校验。
+          if (rOptions.protocol === 'https:') {
+            const realHost = rOptions.hostname
+            if (rOptions.servername == null) {
+              rOptions.servername = realHost
+            }
+            const verifyHost = (rOptions.verifyHost != null && rOptions.verifyHost !== '') ? rOptions.verifyHost : realHost
+            if (rOptions.servername !== realHost || verifyHost !== realHost) {
+              rOptions.checkServerIdentity = (_host, cert) => tls.checkServerIdentity(verifyHost, cert)
+            }
+          }
+
           proxyReq = (rOptions.protocol === 'https:' ? https : http).request(rOptions, (proxyRes) => {
             const cost = Date.now() - start
             if (rOptions.protocol === 'https:') {

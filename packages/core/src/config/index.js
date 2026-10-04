@@ -60,11 +60,11 @@ const defaultConfig = {
         certPath: getRootCaCertPath(),
         keyPath: getRootCaKeyPath(),
       },
-      defaultTimeout: 15000,
+      defaultTimeout: 10000,
       defaultKeepAliveTimeout: 30000,
       timeoutMapping: {
         'github.com': {
-          timeout: 15000,
+          timeout: 10000,
           keepAliveTimeout: 30000,
         },
       },

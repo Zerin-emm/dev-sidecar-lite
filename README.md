@@ -1,35 +1,37 @@
-# dev-sidecar
+# dev-sidecar-lite
 
 开发者边车，命名取自service-mesh的service-sidecar，意为为开发者打辅助的边车工具（以下简称ds）
 通过本地代理的方式将https请求代理到一些国内的加速通道上
 
-<a href='https://github.com/docmirror/dev-sidecar'><img alt="GitHub stars" src="https://img.shields.io/github/stars/docmirror/dev-sidecar?logo=github&cacheSeconds=86400"></a>
+<a href='https://github.com/Zerin-emm/dev-sidecar-lite'><img alt="GitHub stars" src="https://img.shields.io/github/stars/Zerin-emm/dev-sidecar?logo=github&cacheSeconds=86400"></a>
 
-[![Star History Chart](https://api.star-history.com/svg?repos=docmirror/dev-sidecar&type=date&legend=top-left)](https://www.star-history.com/#docmirror/dev-sidecar&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=Zerin-emm/dev-sidecar-lite&type=date&legend=top-left)](https://www.star-history.com/#Zerin-emm/dev-sidecar-lite&type=date&legend=top-left)
 
-> Gitee上的同步项目已被封禁，请认准本项目唯一官方仓库地址[https://github.com/docmirror/dev-sidecar](https://github.com/docmirror/dev-sidecar) 【狗头保命】
->
-> 我将继续奋战在开源一线，为社区贡献更多更好的开源项目。
->
-> 感兴趣的可以关注我的主页 [【github】](https://github.com/greper) [【gitee】](https://gitee.com/greper)
 
-## 打个广告
-
-> [https://github.com/certd/certd](https://github.com/certd/certd)
->
-> 我的开源证书管理工具项目，全自动申请和部署证书，有需求的可以去试试，帮忙点个star
+本仓库基于 [docmirror/dev-sidecar](https://github.com/docmirror/dev-sidecar) 2.2.0 精简而来，改动如下
+| 项 | 原版 2.2.0 | 极简版 |
+|---|:---:|---|
+| 插件系统（free-eye/npm/pip/git/overwall）| ✓ | ✗ |
+| 增强模式 + PAC | ✓ | ✗ |
+| 远程配置（自动下载/刷新）| ✓ | ✗ |
+| 百度统计上报 | ✓ | ✗ |
+| 自动下载更新（electron-updater）| ✓ | ✗ 只查版本跳 Releases |
+| 内置油猴脚本 ×3 | ✓ | ✗ 只留 GitHub 下载脚本 |
+| 测试 / CI / AUR | ✓ | ✗ |
+| Mac / Linux 安装包 | ✓ | ✗ 只出 Windows |
+| 默认请求超时 | 20s | 10s |
+| 假"连接超时"（刷新无效）| ✗ | ✓ 复用连接也清定时器 |
+| 粘性坏 IP | ✗ | ✓ 失败剔除 + 10 分钟冷却 |
+| ECONNRESET | ✗ 不重试 | ✓ 换 IP 重试 1 次 |
+| SNI 伪装下证书校验 | ✗ 形同关闭 | ✓ 按真实域名校验 |
+| Windows 装 CA | 弹向导手点 | 静默 certutil |
+| 更新检查 | GitHub API（易 403）| releases.atom |
+| 更新检查/深色标题栏/排除项卡顿 | ✗ | ✓ 都修了 |
+| 品牌 | dev-sidecar | DevSidecar-Lite |
 
 ## 重要提醒
 
 > ------------------------------重要提醒1---------------------------------
->
-> 注意：由于electron无法监听windows的关机事件，开着ds情况下直接重启电脑，会导致无法上网，你可以手动启动ds即可恢复网络，你也可以将ds设置为开机自启。
->
-> 关于此问题的更多讨论请前往：[https://github.com/docmirror/dev-sidecar/issues/109](https://github.com/docmirror/dev-sidecar/issues/109)
->
-> 注：此问题已在 `1.8.9` 版本中得到解决。
-
-> ------------------------------重要提醒2---------------------------------
 >
 > 注意：本应用启动会自动修改系统代理，所以会与其他代理软件有冲突，一起使用时请谨慎使用。
 >
@@ -76,12 +78,6 @@
 - 将ajax.google.com代理到加速CDN上
 - recaptcha 图片验证码加速
 
-### 1.5、 npm加速
-
-- 支持开启npm代理
-- 官方与淘宝npm registry一键切换
-- 某些npm install的时候，并且使用cnpm也无法安装时，可以尝试开启npm代理再试
-
 **_安全警告_**：
 
 - 请勿在配置文件中使用来源不明的代理地址，有隐私和账号泄露风险
@@ -89,24 +85,19 @@
 
 ## 二、快速开始
 
-支持windows、Mac、Linux(Ubuntu)
+支持windows、Mac、Linux(Ubuntu) [仅打包了Windows平台安装包且仅测试了Windows端]
+
+Mac、Linux(Ubuntu)→[docmirror/dev-sidecar](https://github.com/docmirror/dev-sidecar)
 
 ### 2.1、DevSidecar桌面应用
 
 #### 1）下载安装包
 
 - release下载
-  [Github Release](https://github.com/docmirror/dev-sidecar/releases)
+  [Github Release](https://github.com/Zerin-emm/dev-sidecar-lite/releases)
 
-> Windows: 请选择DevSidecar-x.x.x-windows-universal.exe
+> Windows: 请选择DevSidecar-Lite-x.x.x-x64.exe
 >
-> Mac: 请选择DevSidecar-x.x.x-macos-universal.dmg
->
-> Debian系及其他支持deb安装包的Linux: 请选择DevSidecar-x.x.x-linux-[架构].deb
->
-> 其他Linux: 请选择DevSidecar-x.x.x-linux-[架构].AppImage (未做测试，不保证能用)
-
-> linux安装说明请参考 [linux安装文档](./doc/linux.md)
 
 > 注意：由于没有买应用证书，所以应用在下载安装时会有“未知发行者”等安全提示，选择保留即可。
 
@@ -160,7 +151,7 @@
 
 ## 四、 最佳实践
 
-- 把dev-sidecar一直开着就行了（注意部分版本的windows下开着ds重启电脑，可能会无法上网，重新打开ds即可。）
+- 把dev-sidecar-lite一直开着就行了
 - 建议遇到打开比较慢的国外网站，可以尝试将该域名添加到dns设置中（注意：被\*\*\*封杀的无效）
 
 ### 其他加速
@@ -176,13 +167,6 @@
   > 1. 使用方式：用实际的名称替换 `{}` 的内容，即可加速clone [https://hub.fastgit.org/{username}/{reponame}.git](https://hub.fastgit.org/%7Busername%7D/%7Breponame%7D.git)
   > 2. clone 出来的 remote "origin" 为fastgit的地址，需要手动改回来
   > 3. 你也可以直接使用他们的clone加速工具 [fgit-go](https://github.com/FastGitORG/fgit-go)
-
-#### 2）`github.com` 的镜像网站（注意：部分镜像网站不能登录）
-
-> 1. ~~[hub.fastgit.org](https://hub.fastgit.org/) （2024/11/18：这个好像失效了？）~~
-> 2. ~~[github.com.cnpmjs.org](https://github.com.cnpmjs.org/) 这个很容易超限（2024/11/18：这个好像失效了？）~~
-> 3. [bgithub.xyz](https://bgithub.xyz/)（edge浏览器可能报毒）
-> 4. [kkgithub.com](https://kkgithub.com/)（目前正在维护中）
 
 ## 五、api
 
@@ -367,13 +351,9 @@ npm config delete https-proxy
 
 也可以查阅[有文档tag的issue](https://github.com/docmirror/dev-sidecar/issues?q=is%3Aissue%20label%3ADocumentation)，它们被开发者认证为相当于文档级别的参考issue。
 
-## 七、在其他程序使用
+## 七、从源码运行
 
-- [java程序使用](./doc/other.md#Java程序使用)
-
-## 八、贡献代码
-
-### 8.1、准备环境
+### 7.1、准备环境
 
 #### 1）安装 `nodejs` 及其他环境
 
@@ -401,13 +381,13 @@ source .venv/bin/activate # for linux/mac
 npm install -g pnpm --registry=https://registry.npmmirror.com
 ```
 
-### 8.2、开发调试模式启动
+### 7.2、开发调试模式启动
 
 运行如下命令即可开发模式启动
 
 ```shell
 # 拉取代码
-git clone https://github.com/docmirror/dev-sidecar
+git clone https://github.com/Zerin-emm/dev-sidecar-lite
 
 cd dev-sidecar
 
@@ -423,38 +403,25 @@ npm run electron
 > 如果electron依赖包下载不动，可以开启ds的npm加速
 > 如果pnpm install只是单纯卡住，大概是因为你忘记进python环境了
 
-### 8.3、打包成可执行文件
 
-```shell
-# 先执行上面的步骤，然后运行如下命令打包成可执行文件
-npm run electron:build
-```
 
-### 8.4、提交pr
-
-如果你想将你的修改贡献出来，请提交pr
-
-## 九、联系作者
-
-欢迎bug反馈，需求建议，技术交流等
-
-加官方QQ群（请备注dev-sidecar，或简称DS）
-
-- QQ 1群：390691483，人数：500 / 500（满）
-- QQ 2群：[667666069](http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=n4nksr4sji93vZtD5e8YEHRT6qbh6VyQ&authKey=XKBZnzmoiJrAFyOT4V%2BCrgX5c13ds59b84g%2FVRhXAIQd%2FlAiilsuwDRGWJct%2B570&noverify=0&group_code=667666069)，人数：500 / 500（满）
-- QQ 3群：419807815，人数：500 / 500（满）
-- QQ 4群：[438148299](http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=i_NCBB5f_Bkm2JsEV1tLs2TkQ79UlCID&authKey=nMsVJbJ6P%2FGNO7Q6vsVUadXRKnULUURwR8zvUZJnP3IgzhHYPhYdcBCHvoOh8vYr&noverify=0&group_code=438148299)，人数：1004 / 2000（推荐）
-- QQ 5群：[767622917](http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=nAWi_Rxj7mM4Unp5LMiatmUWhGimtbcB&authKey=aswmlWGjbt3GIWXtvjB2GJqqAKuv7hWjk6UBs3MTb%2Biyvr%2Fsbb1kA9CjF6sK7Hgg&noverify=0&group_code=767622917)，人数：200 / 500
-
-## 十、求star
+## 八、求star
 
 我的其他项目求star
 
-- [fast-crud](https://github.com/fast-crud/fast-crud) : 开发crud快如闪电
-- [certd](https://github.com/certd/certd) : 让你的证书永不过期
-- [trident-sync](https://github.com/handsfree-work/trident-sync) : 二次开发项目同步升级工具
+- [Zerin-emm/GithubDesktop-zhTool](https://github.com/Zerin-emm/GithubDesktop-zhTool)
+GitHub Desktop 汉化工具，自动检测版本并下载对应汉化文件完成汉化，支持一键还原及软件更新管理.
 
-## 十一、感谢
+- [Zerin-emm/VMware-zhTool](https://github.com/Zerin-emm/VMware-zhTool)
+自动读取注册表定位安装目录，一键汉化/还原 VMware Workstation Pro 界面，操作前自动检测进程避免冲突.
+
+- [Zerin-emm/RePKG-GUI](https://github.com/Zerin-emm/RePKG-GUI)
+RePKG 的图形界面工具, 支持提取 PKG 文件中的媒体资源和所有文件.
+
+- [Zerin-emm/Win11-SetTool](https://github.com/Zerin-emm/Win11-SetTool)
+Windows 11 系统优化设置工具, 整合资源管理器/任务栏/隐私等常用设置项, 一键切换即时生效.
+
+## 九、感谢
 
 本项目曾使用lerna包管理工具
 
@@ -473,3 +440,7 @@ npm run electron:build
 本项目部分加速资源由如下组织提供
 
 - [FastGit UK](https://fastgit.org/)
+
+
+
+

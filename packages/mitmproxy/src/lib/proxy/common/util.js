@@ -23,7 +23,7 @@ function getTimeoutConfig (hostname, serverSetting) {
   const timeoutConfig = matchUtil.matchHostname(timeoutMapping, hostname, 'get timeoutConfig') || {}
 
   return {
-    timeout: timeoutConfig.timeout || serverSetting.defaultTimeout || 15000,
+    timeout: timeoutConfig.timeout || serverSetting.defaultTimeout || 10000,
     keepAliveTimeout: timeoutConfig.keepAliveTimeout || serverSetting.defaultKeepAliveTimeout || 30000,
   }
 }
@@ -33,16 +33,15 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
   if (!httpsAgentCache[key]) {
     verifySsl = !!verifySsl
 
-    // 证书回调函数
-    const checkServerIdentity = (host, cert) => {
-      log.info(`checkServerIdentity: ${host}, CN: ${cert.subject.CN}, C: ${cert.subject.C || cert.issuer.C}, ST: ${cert.subject.ST || cert.issuer.ST}, bits: ${cert.bits}`)
-    }
-
+    // 注意：这里绝对不能挂 checkServerIdentity。
+    // 历史缺陷：这里原本挂了一个「只打日志、不返回错误」的 checkServerIdentity，而 Node 的规则是
+    // 「只要传了它就替换掉默认的域名匹配」，返回 undefined 即视为校验通过 —— 结果所有 HTTPS 上游
+    // 请求都只校验证书链、不校验域名，任何受信 CA 签发的证书都能冒充目标域名。
+    // 现在默认校验证完全交给 Node；SNI 改写的场景由 createRequestHandler.js 按【真实域名】覆盖。
     const agent = new HttpsAgent({
       keepAlive: true,
       timeout: timeoutConfig.timeout,
       keepAliveTimeout: timeoutConfig.keepAliveTimeout,
-      checkServerIdentity,
       rejectUnauthorized: verifySsl,
     })
 
@@ -50,7 +49,6 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
       keepAlive: true,
       timeout: timeoutConfig.timeout,
       keepAliveTimeout: timeoutConfig.keepAliveTimeout,
-      checkServerIdentity,
       rejectUnauthorized: false,
     })
 
@@ -99,9 +97,11 @@ util.isUnVerifySsl = (rOptions) => {
  * rejectUnauthorized = false —— node 在没有自定义 agent 时会用该选项创建连接，
  * 因此同样能关掉证书校验。
  *
- * SNI 改写（sni.js）、unVerifySsl 拦截、域名代理（proxy.js）、自动兼容程序
- * （createRequestHandler.js）都通过它降级校验：少了这一步，就会拿原域名的证书去校验
- * 被改写后的 servername，报 ERR_TLS_CERT_ALTNAME_INVALID，代理直接返回 500。
+ * unVerifySsl 拦截、域名代理（proxy.js）、自动兼容程序（createRequestHandler.js）
+ * 都通过它降级校验。
+ * 注意：SNI 改写（sni.js）默认【不再】走这里 —— servername 被改写后的证书校验，改由
+ * createRequestHandler.js 用【真实域名】覆盖 checkServerIdentity 完成（证书链照旧校验），
+ * 只有规则显式写了 unVerifySsl: true 时才降级到这里。
  *
  * @returns {boolean} true 表示本次调用关闭了证书校验；false 表示本来就没校验（无需改动）。
  */
